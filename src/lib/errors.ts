@@ -38,5 +38,6 @@ export const Errors = {
     new RelayError(404, `No available channel for model '${model}'`, 'invalid_request_error', 'model_not_found'),
   audit: (words: string[]) =>
     new RelayError(400, `Content blocked by policy: ${words.join(', ')}`, 'content_policy_violation', 'content_filter'),
-  upstream: (status: number, msg: string) => new RelayError(status >= 500 ? 502 : status, msg, 'upstream_error', 'upstream'),
+  upstream: (status: number, msg: string) =>
+    new RelayError(status === 504 ? 504 : status >= 500 ? 502 : status, msg, 'upstream_error', status === 504 ? 'upstream_timeout' : 'upstream'),
 };

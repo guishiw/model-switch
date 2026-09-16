@@ -12,7 +12,10 @@ const schema = z.object({
   QUEUE_MAX_WAIT_SECONDS: z.coerce.number().int().positive().default(60),
   QUEUE_PROGRESS_INTERVAL_MS: z.coerce.number().int().positive().default(1000),
 
-  UPSTREAM_TIMEOUT_MS: z.coerce.number().int().positive().default(120_000),
+  /** Max wait for the first byte of the upstream response (headers + first chunk) */
+  UPSTREAM_TTFB_TIMEOUT_MS: z.coerce.number().int().positive().default(60_000),
+  /** Max total duration of one upstream call, incl. the whole stream */
+  UPSTREAM_TOTAL_TIMEOUT_MS: z.coerce.number().int().positive().default(600_000),
   RELAY_MAX_RETRIES: z.coerce.number().int().min(0).default(2),
   CIRCUIT_FAILURE_THRESHOLD: z.coerce.number().int().positive().default(5),
   CIRCUIT_OPEN_SECONDS: z.coerce.number().int().positive().default(60),

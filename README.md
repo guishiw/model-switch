@@ -91,4 +91,4 @@ src/app/admin/                后台页面；src/components/admin 组件；src/c
 
 ## 关键环境变量
 
-见 `.env.example`。`GLOBAL_MAX_CONCURRENCY` 控制并发上限，`QUEUE_MAX_WAIT_SECONDS` 为最长排队时间，`CIRCUIT_FAILURE_THRESHOLD/CIRCUIT_OPEN_SECONDS` 控制熔断。
+见 `.env.example`。`GLOBAL_MAX_CONCURRENCY` 控制并发上限，`QUEUE_MAX_WAIT_SECONDS` 为最长排队时间，`CIRCUIT_FAILURE_THRESHOLD/CIRCUIT_OPEN_SECONDS` 控制熔断；`UPSTREAM_TTFB_TIMEOUT_MS`（首字节，默认 60s）与 `UPSTREAM_TOTAL_TIMEOUT_MS`（单次调用总时长，默认 10 分钟）为上游双超时，超时返回 504 并参与故障转移。

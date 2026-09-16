@@ -1,7 +1,6 @@
-import { env } from '../../env';
 import type { ChatCompletionChunk, ChatCompletionRequest, ChatCompletionResponse, Provider, UpstreamTarget } from '../types';
 import { UpstreamError } from '../types';
-import { isKeyInvalid, isRetriable, parseSSE, readError, upstreamFetch } from './sse';
+import { isKeyInvalid, isRetriable, normalizeBodyError, parseSSE, readError, upstreamRequest, withUpstreamBody } from './sse';
 
 /** OpenAI chat -> Gemini generateContent (text + basic function calling) */
 function toGemini(req: ChatCompletionRequest) {
@@ -37,22 +36,22 @@ const usageOf = (j: any) => ({
 async function call(target: UpstreamTarget, req: ChatCompletionRequest, stream: boolean, signal: AbortSignal) {
   const version = target.config.apiVersion ?? 'v1beta';
   const method = stream ? 'streamGenerateContent?alt=sse' : 'generateContent';
-  const res = await upstreamFetch(`${target.baseUrl}/${version}/models/${target.upstreamModel}:${method}`, {
+  const c = await upstreamRequest(`${target.baseUrl}/${version}/models/${target.upstreamModel}:${method}`, {
     method: 'POST',
     headers: { 'content-type': 'application/json', 'x-goog-api-key': target.apiKey, ...target.extraHeaders },
     body: JSON.stringify(toGemini(req)),
-    signal: AbortSignal.any([signal, AbortSignal.timeout(env.UPSTREAM_TIMEOUT_MS)]),
-  }, target.config.insecureTls === true);
-  if (!res.ok) {
-    const msg = await readError(res);
-    throw new UpstreamError(res.status, msg, isRetriable(res.status), isKeyInvalid(res.status, msg));
+  }, signal, target.config.insecureTls === true);
+  if (!c.res.ok) {
+    const msg = await readError(c.res).finally(c.finish);
+    throw new UpstreamError(c.res.status, msg, isRetriable(c.res.status), isKeyInvalid(c.res.status, msg));
   }
-  return res;
+  return c;
 }
 
 export const geminiProvider: Provider = {
   async complete(target, req, signal): Promise<ChatCompletionResponse> {
-    const j: any = await (await call(target, req, false, signal)).json();
+    const c = await call(target, req, false, signal);
+    const j: any = await withUpstreamBody(c, signal, (res) => res.json());
     const cand = j.candidates?.[0];
     const fc = (cand?.content?.parts ?? []).filter((p: any) => p.functionCall);
     return {
@@ -74,19 +73,25 @@ export const geminiProvider: Provider = {
   },
 
   async *stream(target, req, signal) {
-    const res = await call(target, req, true, signal);
-    if (!res.body) throw new UpstreamError(502, 'empty upstream body', true);
+    const c = await call(target, req, true, signal);
+    if (!c.res.body) { c.finish(); throw new UpstreamError(502, 'empty upstream body', true); }
     const id = `gemini-${Date.now()}`;
     const created = Math.floor(Date.now() / 1000);
     let last: any;
     yield { id, object: 'chat.completion.chunk', created, model: req.model, choices: [{ index: 0, delta: { role: 'assistant', content: '' }, finish_reason: null }] };
-    for await (const evt of parseSSE(res.body)) {
-      const j = JSON.parse(evt.data);
-      last = j;
-      const cand = j.candidates?.[0];
-      const text = textOf(cand);
-      if (text) yield { id, object: 'chat.completion.chunk', created, model: req.model, choices: [{ index: 0, delta: { content: text }, finish_reason: null }] };
-      if (cand?.finishReason) yield { id, object: 'chat.completion.chunk', created, model: req.model, choices: [{ index: 0, delta: {}, finish_reason: mapFinish(cand.finishReason) }] };
+    try {
+      for await (const evt of parseSSE(c.res.body)) {
+        const j = JSON.parse(evt.data);
+        last = j;
+        const cand = j.candidates?.[0];
+        const text = textOf(cand);
+        if (text) yield { id, object: 'chat.completion.chunk', created, model: req.model, choices: [{ index: 0, delta: { content: text }, finish_reason: null }] };
+        if (cand?.finishReason) yield { id, object: 'chat.completion.chunk', created, model: req.model, choices: [{ index: 0, delta: {}, finish_reason: mapFinish(cand.finishReason) }] };
+      }
+    } catch (err) {
+      throw normalizeBodyError(err, signal);
+    } finally {
+      c.finish();
     }
     yield { id, object: 'chat.completion.chunk', created, model: req.model, choices: [], usage: usageOf(last ?? {}) };
   },

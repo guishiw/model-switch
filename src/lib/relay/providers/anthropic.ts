@@ -1,7 +1,6 @@
-import { env } from '../../env';
 import type { ChatCompletionChunk, ChatCompletionRequest, ChatCompletionResponse, ChatMessage, Provider, UpstreamTarget } from '../types';
 import { UpstreamError } from '../types';
-import { isKeyInvalid, isRetriable, parseSSE, readError, upstreamFetch } from './sse';
+import { isKeyInvalid, isRetriable, normalizeBodyError, parseSSE, readError, upstreamRequest, withUpstreamBody } from './sse';
 
 /**
  * Translates OpenAI chat format <-> Anthropic Messages API (raw fetch; no SDK dependency on the hot path).
@@ -60,7 +59,7 @@ const mapStop = (r: string | null | undefined) =>
   r === 'end_turn' || r === 'stop_sequence' ? 'stop' : r === 'max_tokens' ? 'length' : r === 'tool_use' ? 'tool_calls' : r ?? null;
 
 async function call(target: UpstreamTarget, body: unknown, signal: AbortSignal) {
-  const res = await upstreamFetch(`${target.baseUrl}/v1/messages`, {
+  const c = await upstreamRequest(`${target.baseUrl}/v1/messages`, {
     method: 'POST',
     headers: {
       'content-type': 'application/json',
@@ -69,19 +68,18 @@ async function call(target: UpstreamTarget, body: unknown, signal: AbortSignal) 
       ...target.extraHeaders,
     },
     body: JSON.stringify(body),
-    signal: AbortSignal.any([signal, AbortSignal.timeout(env.UPSTREAM_TIMEOUT_MS)]),
-  }, target.config.insecureTls === true);
-  if (!res.ok) {
-    const msg = await readError(res);
-    throw new UpstreamError(res.status, msg, isRetriable(res.status), isKeyInvalid(res.status, msg));
+  }, signal, target.config.insecureTls === true);
+  if (!c.res.ok) {
+    const msg = await readError(c.res).finally(c.finish);
+    throw new UpstreamError(c.res.status, msg, isRetriable(c.res.status), isKeyInvalid(c.res.status, msg));
   }
-  return res;
+  return c;
 }
 
 export const anthropicProvider: Provider = {
   async complete(target, req, signal) {
-    const res = await call(target, toAnthropic(target, req, false), signal);
-    const j: any = await res.json();
+    const c = await call(target, toAnthropic(target, req, false), signal);
+    const j: any = await withUpstreamBody(c, signal, (res) => res.json());
     const text = j.content.filter((b: any) => b.type === 'text').map((b: any) => b.text).join('');
     const toolCalls = j.content
       .filter((b: any) => b.type === 'tool_use')
@@ -98,8 +96,8 @@ export const anthropicProvider: Provider = {
   },
 
   async *stream(target, req, signal) {
-    const res = await call(target, toAnthropic(target, req, true), signal);
-    if (!res.body) throw new UpstreamError(502, 'empty upstream body', true);
+    const c = await call(target, toAnthropic(target, req, true), signal);
+    if (!c.res.body) { c.finish(); throw new UpstreamError(502, 'empty upstream body', true); }
     let id = 'msg';
     const created = Math.floor(Date.now() / 1000);
     let inputTokens = 0, outputTokens = 0;
@@ -109,7 +107,8 @@ export const anthropicProvider: Provider = {
       id, object: 'chat.completion.chunk', created, model: req.model, choices: [{ index: 0, delta, finish_reason: finish }],
     });
 
-    for await (const evt of parseSSE(res.body)) {
+    try {
+    for await (const evt of parseSSE(c.res.body)) {
       const e = JSON.parse(evt.data);
       switch (e.type) {
         case 'message_start':
@@ -140,6 +139,11 @@ export const anthropicProvider: Provider = {
         case 'error':
           throw new UpstreamError(502, e.error?.message ?? 'anthropic stream error', true);
       }
+    }
+    } catch (err) {
+      throw normalizeBodyError(err, signal);
+    } finally {
+      c.finish();
     }
   },
 };

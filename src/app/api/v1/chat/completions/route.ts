@@ -8,6 +8,7 @@ import { acquireSlot } from '@/lib/queue/concurrency';
 import { enqueueLog, enqueueRelay, type LogJobData } from '@/lib/queue';
 import { ChatCompletionRequestSchema, type ChatCompletionRequest } from '@/lib/relay/types';
 import { relayComplete, relayStream, computeCost } from '@/lib/relay/engine';
+import { UpstreamError } from '@/lib/relay/types';
 import { countMessages } from '@/lib/relay/tokens';
 import { auditText, createStreamAuditor, recordAuditHit } from '@/lib/audit';
 import { buildSessionContext } from '@/lib/session';
@@ -98,6 +99,7 @@ export async function POST(req: NextRequest) {
     if (req.signal.aborted || (err as Error)?.message === 'ABORTED' || (err as Error)?.name === 'AbortError') {
       return fail(new RelayError(499, 'client closed request', 'client_closed'), 'CANCELLED');
     }
+    if (err instanceof UpstreamError) return fail(Errors.upstream(err.status, err.message));
     log.error({ err }, 'unhandled relay error');
     return fail(new RelayError(500, 'Internal server error', 'server_error'));
   }
@@ -182,7 +184,11 @@ async function handleStream(requestId: string, ctx: Ctx, body: ChatCompletionReq
         controller.close();
       } catch (err) {
         const aborted = req.signal.aborted || (err as Error)?.message === 'ABORTED' || (err as Error)?.name === 'AbortError';
-        const e = err instanceof RelayError ? err : (err as Error).message === 'QUEUE_TIMEOUT' ? Errors.queueTimeout(10) : aborted ? new RelayError(499, 'client closed request', 'client_closed') : new RelayError(502, (err as Error)?.message ?? 'stream failed', 'upstream_error');
+        const e = err instanceof RelayError ? err
+          : (err as Error).message === 'QUEUE_TIMEOUT' ? Errors.queueTimeout(10)
+          : aborted ? new RelayError(499, 'client closed request', 'client_closed')
+          : err instanceof UpstreamError ? Errors.upstream(err.status, err.message)   // e.g. 504 mid-stream timeout
+          : new RelayError(502, (err as Error)?.message ?? 'stream failed', 'upstream_error');
         if (e.status !== 499) log.warn({ err: e.message, status: e.status }, 'stream failed');
         send(sseData({ error: { message: e.message, type: e.type, code: e.code ?? null } }));
         send(encoder.encode('data: [DONE]\n\n'));
