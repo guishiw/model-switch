@@ -4,6 +4,7 @@ import { Badge, statusTone } from '@/components/ui/badge';
 import { Table, THead, TBody, TR, TH, TD } from '@/components/ui/table';
 import { Button } from '@/components/ui/button';
 import { fmt } from '@/lib/utils';
+import { LogDetail } from './log-detail';
 
 type Row = {
   id: string; requestId: string; status: string; httpStatus: number; publicModel: string; upstreamModel?: string | null; stream: boolean;
@@ -27,6 +28,7 @@ export function LogViewer() {
   const [data, setData] = useState<{ rows: Row[]; total: number; pageSize: number; serverTime: number } | null>(null);
   const [tick, setTick] = useState(0);
   const inflight = useRef(false);
+  const [selected, setSelected] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     if (inflight.current) return;
@@ -69,7 +71,7 @@ export function LogViewer() {
         <THead><TR><TH>时间</TH><TH>状态</TH><TH>模型</TH><TH>渠道</TH><TH>令牌</TH><TH>Tokens</TH><TH>耗时</TH><TH>排队</TH><TH>IP</TH><TH>错误</TH></TR></THead>
         <TBody>
           {data?.rows.map((r) => (
-            <TR key={r.id} className={live(r) ? 'bg-amber-50/40' : ''}>
+            <TR key={r.id} onClick={() => setSelected(r.id)} className={`cursor-pointer ${live(r) ? 'bg-amber-50/40' : ''} ${selected === r.id ? 'bg-blue-50' : ''}`} title="点击查看详情">
               <TD className="whitespace-nowrap text-xs">{new Date(r.createdAt).toLocaleString()}</TD>
               <TD className="whitespace-nowrap">
                 <Badge tone={statusTone(r.status)} className={live(r) ? 'animate-pulse' : ''}>{LABEL[r.status] ?? r.status}</Badge>
@@ -89,6 +91,8 @@ export function LogViewer() {
           {!data && <TR><TD colSpan={10} className="py-8 text-center text-muted-foreground">加载中…</TD></TR>}
         </TBody>
       </Table>
+
+      {selected && <LogDetail id={selected} onClose={() => setSelected(null)} />}
 
       <div className="flex items-center justify-between text-sm text-muted-foreground">
         <span>共 {fmt(data?.total ?? 0)} 条 · 第 {page} / {totalPages} 页</span>

@@ -141,6 +141,7 @@ async function handleStream(requestId: string, ctx: Ctx, body: ChatCompletionReq
       let slot: Awaited<ReturnType<typeof acquireSlot>> | undefined;
       let usage = { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 };
       let logged = false;
+      let partial = ''; // reply text received so far, kept for the log when the stream ends early
 
       try {
         // Queue wait. Keep the connection warm with SSE comments / progress events.
@@ -161,6 +162,7 @@ async function handleStream(requestId: string, ctx: Ctx, body: ChatCompletionReq
           if (done) { meta = value; break; }
           const delta = value.choices?.[0]?.delta?.content;
           if (typeof delta === 'string' && delta) {
+            partial += delta;
             const r = await auditor.check(delta);
             if (r.blocked) {
               await recordAuditHit(requestId, 'output', r.matched, delta);
@@ -196,7 +198,7 @@ async function handleStream(requestId: string, ctx: Ctx, body: ChatCompletionReq
           publicModel: body.model, upstreamModel: meta?.selection.target.upstreamModel, status, httpStatus, stream: true,
           usage: meta?.usage ?? usage, cost: meta ? computeCost(meta.usage, meta.selection.pricing) : 0, latencyMs: Date.now() - started, queueWaitMs,
           ttfbMs: meta?.ttfbMs, retries: meta?.retries ?? 0, clientIp: ip, userAgent: ua, errorMessage, requestBody: body,
-          responseBody: meta ? { text: meta.outputText, finish_reason: meta.finishReason } : undefined,
+          responseBody: meta ? { text: meta.outputText, finish_reason: meta.finishReason } : partial ? { text: partial, finish_reason: null, partial: true } : undefined,
         };
       }
     },
