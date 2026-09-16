@@ -3,7 +3,7 @@ import { jwtVerify } from 'jose';
 
 /**
  * Edge middleware:
- *  - /admin/**      -> require admin cookie JWT (redirect to /admin/login)
+ *  - /admin/**      -> require admin cookie JWT (redirect to /login)
  *  - /api/admin/**  -> require admin cookie JWT (401 JSON)
  *  - /api/v1/**     -> attach a request id; bearer auth happens in the route (needs Prisma/Redis, not edge-safe)
  */
@@ -35,10 +35,10 @@ export async function middleware(req: NextRequest) {
     return NextResponse.next();
   }
 
-  if (pathname.startsWith('/admin') && pathname !== '/admin/login') {
+  if (pathname.startsWith('/admin')) {
     if (!(await isAdmin(req))) {
       const url = req.nextUrl.clone();
-      url.pathname = '/admin/login';
+      url.pathname = '/login';
       url.searchParams.set('next', pathname);
       return NextResponse.redirect(url);
     }
