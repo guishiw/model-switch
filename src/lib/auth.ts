@@ -9,6 +9,11 @@ import type { AccessToken, User } from '@prisma/client';
 
 export type AuthContext = { token: AccessToken; user: User };
 
+/** allowedModels is stored as JSON (MySQL has no array columns) */
+export function allowedModelsOf(token: { allowedModels: unknown }): string[] {
+  return Array.isArray(token.allowedModels) ? (token.allowedModels as string[]) : [];
+}
+
 const TOKEN_CACHE_TTL = 30; // seconds
 
 /**

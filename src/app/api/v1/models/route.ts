@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { authenticateBearer } from '@/lib/auth';
+import { authenticateBearer, allowedModelsOf } from '@/lib/auth';
 import { RelayError } from '@/lib/errors';
 import { listPublicModels } from '@/lib/relay/selector';
 
@@ -10,7 +10,8 @@ export async function GET(req: NextRequest) {
   try {
     const ctx = await authenticateBearer(req);
     let models = await listPublicModels();
-    if (ctx.token.allowedModels.length) models = models.filter((m) => ctx.token.allowedModels.includes(m));
+    const allowed = allowedModelsOf(ctx.token);
+    if (allowed.length) models = models.filter((m) => allowed.includes(m));
     return NextResponse.json({
       object: 'list',
       data: models.map((id) => ({ id, object: 'model', created: 0, owned_by: 'relay' })),

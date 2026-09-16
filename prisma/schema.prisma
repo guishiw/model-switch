@@ -4,7 +4,7 @@ generator client {
 }
 
 datasource db {
-  provider = "postgresql"
+  provider = "mysql"
   url      = env("DATABASE_URL")
 }
 
@@ -13,10 +13,10 @@ datasource db {
 // ---------------------------------------------------------------------------
 
 enum ProviderType {
-  OPENAI      // OpenAI + any OpenAI-compatible (Qwen/DashScope compatible mode, DeepSeek, vLLM ...)
+  OPENAI // OpenAI + any OpenAI-compatible (Qwen/DashScope compatible mode, DeepSeek, vLLM ...)
   ANTHROPIC
   GEMINI
-  OLLAMA      // OpenAI-compatible endpoint (/v1) on a local Ollama instance
+  OLLAMA // OpenAI-compatible endpoint (/v1) on a local Ollama instance
 }
 
 enum ChannelStatus {
@@ -27,52 +27,52 @@ enum ChannelStatus {
 
 /// A channel = one upstream endpoint (base URL) with one or more API keys
 model Channel {
-  id            String        @id @default(cuid())
-  name          String        @unique
-  provider      ProviderType
-  baseUrl       String
-  status        ChannelStatus @default(ACTIVE)
+  id             String        @id @default(cuid())
+  name           String        @unique
+  provider       ProviderType
+  baseUrl        String        @db.VarChar(512)
+  status         ChannelStatus @default(ACTIVE)
   /// Load-balancing weight across channels serving the same public model
-  weight        Int           @default(10)
-  priority      Int           @default(0)
+  weight         Int           @default(10)
+  priority       Int           @default(0)
   /// Per-channel limits (0 = unlimited)
-  rpmLimit      Int           @default(0)
-  tpmLimit      Int           @default(0)
-  maxConcurrency Int          @default(0)
+  rpmLimit       Int           @default(0)
+  tpmLimit       Int           @default(0)
+  maxConcurrency Int           @default(0)
   /// Extra headers to send upstream, e.g. {"OpenAI-Organization": "..."}
-  extraHeaders  Json?
+  extraHeaders   Json?
   /// Provider-specific config (e.g. anthropic-version, gemini apiVersion)
-  config        Json?
+  config         Json?
 
   keys          ApiKey[]
   modelMappings ModelMapping[]
   requestLogs   RequestLog[]
 
-  createdAt     DateTime      @default(now())
-  updatedAt     DateTime      @updatedAt
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 
   @@index([status])
 }
 
 /// Upstream API key belonging to a channel. Multiple keys are rotated.
 model ApiKey {
-  id          String   @id @default(cuid())
-  channelId   String
-  channel     Channel  @relation(fields: [channelId], references: [id], onDelete: Cascade)
+  id             String    @id @default(cuid())
+  channelId      String
+  channel        Channel   @relation(fields: [channelId], references: [id], onDelete: Cascade)
   /// AES-256-GCM encrypted key; never returned in plaintext by the admin API
-  encryptedKey String
+  encryptedKey   String    @db.Text
   /// last 4 chars for display
-  hint        String
-  weight      Int      @default(10)
-  enabled     Boolean  @default(true)
+  hint           String
+  weight         Int       @default(10)
+  enabled        Boolean   @default(true)
   /// auto-disabled by the balancer after auth errors / quota exhaustion
   disabledReason String?
-  rpmLimit    Int      @default(0)
-  tpmLimit    Int      @default(0)
-  lastUsedAt  DateTime?
-  failureCount Int     @default(0)
-  createdAt   DateTime @default(now())
-  updatedAt   DateTime @updatedAt
+  rpmLimit       Int       @default(0)
+  tpmLimit       Int       @default(0)
+  lastUsedAt     DateTime?
+  failureCount   Int       @default(0)
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
 
   @@index([channelId, enabled])
 }
@@ -80,18 +80,18 @@ model ApiKey {
 /// Maps a public model name (what clients send) to the upstream model on a channel.
 /// e.g. publicModel="gpt-4" -> channel X, upstreamModel="my-gpt-4"
 model ModelMapping {
-  id            String  @id @default(cuid())
-  channelId     String
-  channel       Channel @relation(fields: [channelId], references: [id], onDelete: Cascade)
-  publicModel   String
-  upstreamModel String
-  enabled       Boolean @default(true)
+  id              String         @id @default(cuid())
+  channelId       String
+  channel         Channel        @relation(fields: [channelId], references: [id], onDelete: Cascade)
+  publicModel     String
+  upstreamModel   String
+  enabled         Boolean        @default(true)
   /// Default params merged under the request; request values win.
   paramTemplateId String?
-  paramTemplate ParamTemplate? @relation(fields: [paramTemplateId], references: [id])
+  paramTemplate   ParamTemplate? @relation(fields: [paramTemplateId], references: [id])
   /// Pricing per 1M tokens (for cost stats)
-  inputPricePerM  Decimal @default(0) @db.Decimal(12, 6)
-  outputPricePerM Decimal @default(0) @db.Decimal(12, 6)
+  inputPricePerM  Decimal        @default(0) @db.Decimal(12, 6)
+  outputPricePerM Decimal        @default(0) @db.Decimal(12, 6)
 
   @@unique([channelId, publicModel])
   @@index([publicModel, enabled])
@@ -99,11 +99,11 @@ model ModelMapping {
 
 /// Named default-parameter set (temperature, max_tokens, top_p, ...)
 model ParamTemplate {
-  id       String  @id @default(cuid())
-  name     String  @unique
-  params   Json    // { "temperature": 0.7, "max_tokens": 2048, "top_p": 1 }
-  mappings ModelMapping[]
-  createdAt DateTime @default(now())
+  id        String         @id @default(cuid())
+  name      String         @unique
+  params    Json // { "temperature": 0.7, "max_tokens": 2048, "top_p": 1 }
+  mappings  ModelMapping[]
+  createdAt DateTime       @default(now())
 }
 
 // ---------------------------------------------------------------------------
@@ -116,39 +116,39 @@ enum UserRole {
 }
 
 model User {
-  id           String    @id @default(cuid())
-  username     String    @unique
+  id           String        @id @default(cuid())
+  username     String        @unique
   passwordHash String
-  role         UserRole  @default(USER)
+  role         UserRole      @default(USER)
   /// Higher = served first from the queue (0-9)
-  tier         Int       @default(0)
+  tier         Int           @default(0)
   tokens       AccessToken[]
   sessions     ChatSession[]
-  createdAt    DateTime  @default(now())
+  createdAt    DateTime      @default(now())
 }
 
 /// Bearer token clients send in `Authorization: Bearer sk-...`
 model AccessToken {
-  id            String    @id @default(cuid())
-  userId        String
-  user          User      @relation(fields: [userId], references: [id], onDelete: Cascade)
-  name          String
+  id             String       @id @default(cuid())
+  userId         String
+  user           User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  name           String
   /// sha256 hex of the raw token; raw token shown only once at creation
-  tokenHash     String    @unique
-  hint          String
-  enabled       Boolean   @default(true)
-  expiresAt     DateTime?
+  tokenHash      String       @unique
+  hint           String
+  enabled        Boolean      @default(true)
+  expiresAt      DateTime?
   /// Quotas (0 = unlimited)
-  rpmLimit      Int       @default(0)
-  tpmLimit      Int       @default(0)
-  tokenQuota    BigInt    @default(0)  // total token budget
-  tokensUsed    BigInt    @default(0)
-  maxConcurrency Int      @default(0)
+  rpmLimit       Int          @default(0)
+  tpmLimit       Int          @default(0)
+  tokenQuota     BigInt       @default(0) // total token budget
+  tokensUsed     BigInt       @default(0)
+  maxConcurrency Int          @default(0)
   /// Restrict to a set of public models (empty = all)
-  allowedModels String[]  @default([])
-  requestLogs   RequestLog[]
-  lastUsedAt    DateTime?
-  createdAt     DateTime  @default(now())
+  allowedModels  Json         @default("[]")
+  requestLogs    RequestLog[]
+  lastUsedAt     DateTime?
+  createdAt      DateTime     @default(now())
 
   @@index([userId])
 }
@@ -158,18 +158,18 @@ model AccessToken {
 // ---------------------------------------------------------------------------
 
 model ChatSession {
-  id        String   @id @default(cuid())
-  userId    String
-  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
-  title     String?
-  model     String
+  id            String        @id @default(cuid())
+  userId        String
+  user          User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  title         String?
+  model         String
   /// system prompt pinned to the session
-  systemPrompt String?
+  systemPrompt  String?       @db.Text
   /// keep the last N turns when building context (0 = all)
-  contextWindow Int   @default(20)
-  messages  ChatMessage[]
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+  contextWindow Int           @default(20)
+  messages      ChatMessage[]
+  createdAt     DateTime      @default(now())
+  updatedAt     DateTime      @updatedAt
 
   @@index([userId, updatedAt])
 }
@@ -182,14 +182,14 @@ enum MessageRole {
 }
 
 model ChatMessage {
-  id         String      @id @default(cuid())
-  sessionId  String
-  session    ChatSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
-  role       MessageRole
-  content    String
-  tokenCount Int         @default(0)
+  id           String      @id @default(cuid())
+  sessionId    String
+  session      ChatSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  role         MessageRole
+  content      String      @db.Text
+  tokenCount   Int         @default(0)
   requestLogId String?
-  createdAt  DateTime    @default(now())
+  createdAt    DateTime    @default(now())
 
   @@index([sessionId, createdAt])
 }
@@ -207,36 +207,36 @@ enum RequestStatus {
 }
 
 model RequestLog {
-  id            String        @id @default(cuid())
-  requestId     String        @unique
-  tokenId       String?
-  token         AccessToken?  @relation(fields: [tokenId], references: [id], onDelete: SetNull)
-  channelId     String?
-  channel       Channel?      @relation(fields: [channelId], references: [id], onDelete: SetNull)
-  apiKeyId      String?
-  publicModel   String
-  upstreamModel String?
-  status        RequestStatus
-  httpStatus    Int
-  stream        Boolean       @default(false)
-  promptTokens  Int           @default(0)
-  completionTokens Int        @default(0)
-  totalTokens   Int           @default(0)
-  cost          Decimal       @default(0) @db.Decimal(14, 8)
+  id               String        @id @default(cuid())
+  requestId        String        @unique
+  tokenId          String?
+  token            AccessToken?  @relation(fields: [tokenId], references: [id], onDelete: SetNull)
+  channelId        String?
+  channel          Channel?      @relation(fields: [channelId], references: [id], onDelete: SetNull)
+  apiKeyId         String?
+  publicModel      String
+  upstreamModel    String?
+  status           RequestStatus
+  httpStatus       Int
+  stream           Boolean       @default(false)
+  promptTokens     Int           @default(0)
+  completionTokens Int           @default(0)
+  totalTokens      Int           @default(0)
+  cost             Decimal       @default(0) @db.Decimal(14, 8)
   /// Total wall time incl. queue wait (ms)
-  latencyMs     Int
+  latencyMs        Int
   /// Time spent waiting in queue (ms)
-  queueWaitMs   Int           @default(0)
+  queueWaitMs      Int           @default(0)
   /// Time to first byte from upstream (ms)
-  ttfbMs        Int?
-  retries       Int           @default(0)
-  clientIp      String?
-  userAgent     String?
-  errorMessage  String?
+  ttfbMs           Int?
+  retries          Int           @default(0)
+  clientIp         String?
+  userAgent        String?       @db.Text
+  errorMessage     String?       @db.Text
   /// Full request / response bodies (JSON). Consider retention policy.
-  requestBody   Json?
-  responseBody  Json?
-  createdAt     DateTime      @default(now())
+  requestBody      Json?
+  responseBody     Json?
+  createdAt        DateTime      @default(now())
 
   @@index([createdAt])
   @@index([tokenId, createdAt])
@@ -246,30 +246,30 @@ model RequestLog {
 
 /// Hourly rollups produced by the worker for dashboard charts
 model UsageStatHourly {
-  id           String   @id @default(cuid())
-  bucket       DateTime // truncated to hour
-  channelId    String?
-  tokenId      String?
-  publicModel  String
-  requests     Int      @default(0)
-  successes    Int      @default(0)
-  promptTokens BigInt   @default(0)
-  completionTokens BigInt @default(0)
-  cost         Decimal  @default(0) @db.Decimal(14, 8)
-  latencyP50   Int      @default(0)
-  latencyP95   Int      @default(0)
+  id               String   @id @default(cuid())
+  bucket           DateTime // truncated to hour
+  channelId        String?
+  tokenId          String?
+  publicModel      String
+  requests         Int      @default(0)
+  successes        Int      @default(0)
+  promptTokens     BigInt   @default(0)
+  completionTokens BigInt   @default(0)
+  cost             Decimal  @default(0) @db.Decimal(14, 8)
+  latencyP50       Int      @default(0)
+  latencyP95       Int      @default(0)
 
   @@unique([bucket, channelId, tokenId, publicModel])
   @@index([bucket])
 }
 
 model AuditHit {
-  id         String   @id @default(cuid())
-  requestId  String
-  direction  String   // "input" | "output"
-  matched    String[]
-  snippet    String
-  createdAt  DateTime @default(now())
+  id        String   @id @default(cuid())
+  requestId String
+  direction String // "input" | "output"
+  matched   Json
+  snippet   String   @db.Text
+  createdAt DateTime @default(now())
 
   @@index([createdAt])
 }

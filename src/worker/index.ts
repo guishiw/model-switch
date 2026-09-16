@@ -9,6 +9,8 @@ import { relayComplete, computeCost } from '../lib/relay/engine';
 import { persistTurn } from '../lib/session';
 import { statsQueue, type LogJobData, type RelayJobData } from '../lib/queue';
 import { RelayError } from '../lib/errors';
+
+const prefix = process.env.QUEUE_PREFIX ?? 'ms';
 import { rollupHour } from './stats';
 
 /**
@@ -51,7 +53,7 @@ const relayWorker = new Worker<RelayJobData>(
       await slot.release();
     }
   },
-  { connection: redis, concurrency: Number(process.env.WORKER_CONCURRENCY ?? 20) },
+  { connection: redis, prefix, concurrency: Number(process.env.WORKER_CONCURRENCY ?? 20) },
 );
 
 async function logQueueAdd(data: LogJobData) {
@@ -87,10 +89,10 @@ const logWorker = new Worker<LogJobData>(
       await persistTurn(d.sessionId, req?.messages ?? [], d.outputText, log.id);
     }
   },
-  { connection: redis, concurrency: 10 },
+  { connection: redis, prefix, concurrency: 10 },
 );
 
-const statsWorker = new Worker('stats', async () => rollupHour(prisma), { connection: redis });
+const statsWorker = new Worker('stats', async () => rollupHour(prisma), { connection: redis, prefix });
 
 async function main() {
   await statsQueue.add('rollup', {}, { repeat: { every: 5 * 60 * 1000 }, jobId: 'rollup-hourly' });

@@ -10,6 +10,8 @@ import type { RequestStatus } from '@prisma/client';
  *  - `stats`   : hourly rollups (repeatable)
  */
 const connection = redis;
+/** Key prefix so the gateway's queues don't collide with other apps sharing this Redis db */
+const prefix = process.env.QUEUE_PREFIX ?? 'ms';
 
 export type RelayJobData = {
   requestId: string;
@@ -47,9 +49,9 @@ export type LogJobData = {
 
 const g = globalThis as unknown as { relayQueue?: Queue<RelayJobData>; logQueue?: Queue<LogJobData>; statsQueue?: Queue };
 
-export const relayQueue = g.relayQueue ?? new Queue<RelayJobData>('relay', { connection, defaultJobOptions: { removeOnComplete: { age: 3600 }, removeOnFail: { age: 86400 }, attempts: 1 } });
-export const logQueue = g.logQueue ?? new Queue<LogJobData>('logs', { connection, defaultJobOptions: { removeOnComplete: true, removeOnFail: { age: 86400 }, attempts: 3, backoff: { type: 'exponential', delay: 1000 } } });
-export const statsQueue = g.statsQueue ?? new Queue('stats', { connection, defaultJobOptions: { removeOnComplete: true } });
+export const relayQueue = g.relayQueue ?? new Queue<RelayJobData>('relay', { connection, prefix, defaultJobOptions: { removeOnComplete: { age: 3600 }, removeOnFail: { age: 86400 }, attempts: 1 } });
+export const logQueue = g.logQueue ?? new Queue<LogJobData>('logs', { connection, prefix, defaultJobOptions: { removeOnComplete: true, removeOnFail: { age: 86400 }, attempts: 3, backoff: { type: 'exponential', delay: 1000 } } });
+export const statsQueue = g.statsQueue ?? new Queue('stats', { connection, prefix, defaultJobOptions: { removeOnComplete: true } });
 
 if (process.env.NODE_ENV !== 'production') Object.assign(g, { relayQueue, logQueue, statsQueue });
 
@@ -64,4 +66,4 @@ export function enqueueLog(data: LogJobData) {
   return logQueue.add('log', data).catch(() => { /* never fail a request because logging failed */ });
 }
 
-export const relayQueueEvents = () => new QueueEvents('relay', { connection: redis.duplicate() });
+export const relayQueueEvents = () => new QueueEvents('relay', { connection: redis.duplicate(), prefix });

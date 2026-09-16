@@ -1,12 +1,12 @@
 # LLM Relay & Management Platform
 
-统一大模型 API 中转网关：OpenAI 兼容接口 + 多渠道负载均衡 + 多维限流 + 熔断 + 优先级排队 + 会话管理 + 内容审计 + 可视化后台。
+统一大模型 API 中转网关（MySQL 8 + Redis）：OpenAI 兼容接口 + 多渠道负载均衡 + 多维限流 + 熔断 + 优先级排队 + 会话管理 + 内容审计 + 可视化后台。
 
 ## 快速开始
 
 ```bash
 cp .env.example .env            # 修改 ADMIN_JWT_SECRET / API_KEY_ENCRYPTION_KEY
-docker compose up -d postgres redis
+docker compose up -d mysql redis
 npm install
 npx prisma migrate dev --name init
 npm run db:seed                 # 输出 admin 密码与首个访问令牌

@@ -12,22 +12,27 @@ export async function rollupHour(prisma: PrismaClient) {
       channelId: string | null; tokenId: string | null; publicModel: string; requests: bigint; successes: bigint;
       promptTokens: bigint; completionTokens: bigint; cost: number; p50: number; p95: number;
     }>>`
-      SELECT "channelId", "tokenId", "publicModel",
-             COUNT(*)                                             AS requests,
-             COUNT(*) FILTER (WHERE status = 'SUCCESS')           AS successes,
-             COALESCE(SUM("promptTokens"), 0)                     AS "promptTokens",
-             COALESCE(SUM("completionTokens"), 0)                 AS "completionTokens",
-             COALESCE(SUM(cost), 0)::float                        AS cost,
-             COALESCE(percentile_cont(0.5) WITHIN GROUP (ORDER BY "latencyMs"), 0)::int  AS p50,
-             COALESCE(percentile_cont(0.95) WITHIN GROUP (ORDER BY "latencyMs"), 0)::int AS p95
-      FROM "RequestLog"
-      WHERE "createdAt" >= ${bucket} AND "createdAt" < ${end}
-      GROUP BY "channelId", "tokenId", "publicModel"`;
+      SELECT channelId, tokenId, publicModel,
+             COUNT(*)                                                  AS requests,
+             SUM(CASE WHEN status = 'SUCCESS' THEN 1 ELSE 0 END)       AS successes,
+             COALESCE(SUM(promptTokens), 0)                            AS promptTokens,
+             COALESCE(SUM(completionTokens), 0)                        AS completionTokens,
+             COALESCE(SUM(cost), 0)                                    AS cost,
+             COALESCE(MAX(CASE WHEN rn = CEIL(cnt * 0.5)  THEN latencyMs END), 0) AS p50,
+             COALESCE(MAX(CASE WHEN rn = CEIL(cnt * 0.95) THEN latencyMs END), 0) AS p95
+      FROM (
+        SELECT channelId, tokenId, publicModel, status, promptTokens, completionTokens, cost, latencyMs,
+               ROW_NUMBER() OVER (PARTITION BY channelId, tokenId, publicModel ORDER BY latencyMs) AS rn,
+               COUNT(*)     OVER (PARTITION BY channelId, tokenId, publicModel)                    AS cnt
+        FROM RequestLog
+        WHERE createdAt >= ${bucket} AND createdAt < ${end}
+      ) t
+      GROUP BY channelId, tokenId, publicModel`;
 
     for (const r of rows) {
       const data = {
-        requests: Number(r.requests), successes: Number(r.successes), promptTokens: r.promptTokens, completionTokens: r.completionTokens,
-        cost: r.cost, latencyP50: r.p50, latencyP95: r.p95,
+        requests: Number(r.requests), successes: Number(r.successes), promptTokens: BigInt(r.promptTokens), completionTokens: BigInt(r.completionTokens),
+        cost: Number(r.cost), latencyP50: Number(r.p50), latencyP95: Number(r.p95),
       };
       // composite unique with nullable columns: use deleteMany+create for portability
       await prisma.$transaction([

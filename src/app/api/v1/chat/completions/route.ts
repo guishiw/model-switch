@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { authenticateBearer } from '@/lib/auth';
+import { authenticateBearer, allowedModelsOf } from '@/lib/auth';
 import { Errors, RelayError } from '@/lib/errors';
 import { logger } from '@/lib/logger';
 import { env } from '@/lib/env';
@@ -56,7 +56,8 @@ export async function POST(req: NextRequest) {
     const parsed = ChatCompletionRequestSchema.safeParse(await req.json().catch(() => null));
     if (!parsed.success) throw Errors.badRequest(parsed.error.issues.map((i) => `${i.path.join('.')}: ${i.message}`).join('; '));
     body = parsed.data;
-    if (ctx.token.allowedModels.length && !ctx.token.allowedModels.includes(body.model)) throw Errors.forbidden(`model '${body.model}' not allowed for this token`);
+    const allowed = allowedModelsOf(ctx.token);
+    if (allowed.length && !allowed.includes(body.model)) throw Errors.forbidden(`model '${body.model}' not allowed for this token`);
 
     // 3. session context
     if (body.session_id) body.messages = await buildSessionContext(body.session_id, ctx.user.id, body.messages);

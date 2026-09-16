@@ -1,16 +1,18 @@
 services:
-  postgres:
-    image: postgres:16-alpine
+  mysql:
+    image: mysql:8.0
     environment:
-      POSTGRES_USER: relay
-      POSTGRES_PASSWORD: relay
-      POSTGRES_DB: relay
-    ports: ["5432:5432"]
-    volumes: [pgdata:/var/lib/postgresql/data]
+      MYSQL_ROOT_PASSWORD: root
+      MYSQL_USER: relay
+      MYSQL_PASSWORD: relay
+      MYSQL_DATABASE: relay
+    command: --character-set-server=utf8mb4 --collation-server=utf8mb4_unicode_ci
+    ports: ["3306:3306"]
+    volumes: [mysqldata:/var/lib/mysql]
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U relay"]
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-prelay", "-urelay"]
       interval: 5s
-      retries: 10
+      retries: 20
 
   redis:
     image: redis:7-alpine
@@ -22,11 +24,11 @@ services:
     build: { context: ., target: web }
     env_file: .env
     environment:
-      DATABASE_URL: postgresql://relay:relay@postgres:5432/relay?schema=public
+      DATABASE_URL: mysql://relay:relay@mysql:3306/relay
       REDIS_URL: redis://redis:6379/0
     ports: ["3000:3000"]
     depends_on:
-      postgres: { condition: service_healthy }
+      mysql: { condition: service_healthy }
       redis: { condition: service_started }
     command: sh -c "npx prisma migrate deploy && node server.js"
 
@@ -34,11 +36,11 @@ services:
     build: { context: ., target: worker }
     env_file: .env
     environment:
-      DATABASE_URL: postgresql://relay:relay@postgres:5432/relay?schema=public
+      DATABASE_URL: mysql://relay:relay@mysql:3306/relay
       REDIS_URL: redis://redis:6379/0
     depends_on: [web]
     deploy: { replicas: 2 }
 
 volumes:
-  pgdata:
+  mysqldata:
   redisdata:
