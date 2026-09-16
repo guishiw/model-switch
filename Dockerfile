@@ -1,16 +1,22 @@
 # ---------- deps ----------
 FROM node:20-alpine AS deps
 WORKDIR /app
+# Optional registry mirrors (e.g. for mainland China): pass --build-arg NPM_REGISTRY=https://registry.npmmirror.com
+ARG NPM_REGISTRY=https://registry.npmjs.org
+ARG PRISMA_ENGINES_MIRROR=
+ENV PRISMA_ENGINES_MIRROR=${PRISMA_ENGINES_MIRROR}
 RUN apk add --no-cache libc6-compat openssl
 COPY package.json package-lock.json* ./
 COPY prisma ./prisma
-RUN npm ci
+RUN npm config set registry $NPM_REGISTRY && npm ci --no-audit --no-fund
 
 # ---------- build ----------
 FROM node:20-alpine AS builder
 WORKDIR /app
 COPY --from=deps /app/node_modules ./node_modules
 COPY . .
+ARG PRISMA_ENGINES_MIRROR=
+ENV PRISMA_ENGINES_MIRROR=${PRISMA_ENGINES_MIRROR}
 ENV NEXT_TELEMETRY_DISABLED=1
 RUN npx prisma generate && npm run build
 

@@ -34,8 +34,9 @@ fi
 docker start ms-redis >/dev/null
 
 log "build images"
-docker build --target web    -t model-switch-web:latest .
-docker build --target worker -t model-switch-worker:latest .
+BUILD_ARGS=(--build-arg "NPM_REGISTRY=${NPM_REGISTRY:-https://registry.npmmirror.com}" --build-arg "PRISMA_ENGINES_MIRROR=${PRISMA_ENGINES_MIRROR:-https://registry.npmmirror.com/-/binary/prisma}")
+docker build "${BUILD_ARGS[@]}" --target web    -t model-switch-web:latest .
+docker build "${BUILD_ARGS[@]}" --target worker -t model-switch-worker:latest .
 
 log "wait for postgres"
 for i in $(seq 1 30); do
