@@ -13,11 +13,16 @@ RUN npm config set registry $NPM_REGISTRY && npm ci --no-audit --no-fund
 # ---------- build ----------
 FROM node:20-alpine AS builder
 WORKDIR /app
+RUN apk add --no-cache libc6-compat openssl
 COPY --from=deps /app/node_modules ./node_modules
 COPY . .
 ARG PRISMA_ENGINES_MIRROR=
 ENV PRISMA_ENGINES_MIRROR=${PRISMA_ENGINES_MIRROR}
 ENV NEXT_TELEMETRY_DISABLED=1
+# Build-time placeholders only: env.ts validates at import time during page-data collection.
+# Real values come from --env-file at runtime.
+ENV DATABASE_URL=postgresql://build:build@localhost:5432/build \
+    ADMIN_JWT_SECRET=build-time-placeholder-secret-not-used-at-runtime
 RUN npx prisma generate && npm run build
 
 # ---------- web runtime ----------
