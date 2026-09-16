@@ -201,8 +201,11 @@ model ChatMessage {
 // ---------------------------------------------------------------------------
 
 enum RequestStatus {
+  QUEUED // received, waiting for a concurrency slot
+  RUNNING // upstream call in progress / streaming
   SUCCESS
   FAILED
+  CANCELLED // client closed the connection
   REJECTED_RATE_LIMIT
   REJECTED_AUDIT
   QUEUE_TIMEOUT
@@ -226,7 +229,7 @@ model RequestLog {
   totalTokens      Int           @default(0)
   cost             Decimal       @default(0) @db.Decimal(14, 8)
   /// Total wall time incl. queue wait (ms)
-  latencyMs        Int
+  latencyMs        Int           @default(0)
   /// Time spent waiting in queue (ms)
   queueWaitMs      Int           @default(0)
   /// Time to first byte from upstream (ms)
@@ -239,6 +242,7 @@ model RequestLog {
   requestBody      Json?
   responseBody     Json?
   createdAt        DateTime      @default(now())
+  updatedAt        DateTime      @default(now()) @updatedAt
 
   @@index([createdAt])
   @@index([tokenId, createdAt])

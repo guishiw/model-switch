@@ -10,4 +10,5 @@ const tones: Record<string, string> = {
 export function Badge({ tone = 'gray', className, children }: { tone?: keyof typeof tones; className?: string; children: React.ReactNode }) {
   return <span className={cn('inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium', tones[tone], className)}>{children}</span>;
 }
-export const statusTone = (s: string) => (s === 'ACTIVE' || s === 'SUCCESS' ? 'green' : s === 'CIRCUIT_OPEN' || s === 'QUEUE_TIMEOUT' ? 'amber' : s === 'DISABLED' ? 'gray' : 'red');
+export const statusTone = (s: string) =>
+  s === 'ACTIVE' || s === 'SUCCESS' ? 'green' : s === 'RUNNING' ? 'blue' : s === 'QUEUED' || s === 'CIRCUIT_OPEN' || s === 'QUEUE_TIMEOUT' ? 'amber' : s === 'DISABLED' || s === 'CANCELLED' ? 'gray' : 'red';

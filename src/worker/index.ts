@@ -12,6 +12,7 @@ import { RelayError } from '../lib/errors';
 
 const prefix = process.env.QUEUE_PREFIX ?? 'ms';
 import { rollupHour } from './stats';
+import { markRunning } from '../lib/request-log';
 
 /**
  * Task scheduling layer.
@@ -31,6 +32,7 @@ const relayWorker = new Worker<RelayJobData>(
       maxWaitMs: env.QUEUE_MAX_WAIT_SECONDS * 1000 * 5, // async jobs may wait longer
       onProgress: (p) => job.updateProgress({ position: p.position, etaSeconds: p.etaSeconds }),
     });
+    markRunning(requestId, slot.waitedMs);
     try {
       const { response, meta } = await relayComplete(requestId, request, new AbortController().signal);
       await logQueueAdd({
@@ -65,18 +67,16 @@ const logWorker = new Worker<LogJobData>(
   'logs',
   async (job) => {
     const d = job.data;
-    const log = await prisma.requestLog.upsert({
-      where: { requestId: d.requestId },
-      update: {},
-      create: {
-        requestId: d.requestId, tokenId: d.tokenId, channelId: d.channelId, apiKeyId: d.apiKeyId, publicModel: d.publicModel,
-        upstreamModel: d.upstreamModel, status: d.status, httpStatus: d.httpStatus, stream: d.stream,
-        promptTokens: d.usage.prompt_tokens, completionTokens: d.usage.completion_tokens, totalTokens: d.usage.total_tokens,
-        cost: d.cost, latencyMs: d.latencyMs, queueWaitMs: d.queueWaitMs, ttfbMs: d.ttfbMs, retries: d.retries,
-        clientIp: d.clientIp, userAgent: d.userAgent, errorMessage: d.errorMessage,
-        requestBody: d.requestBody as any, responseBody: d.responseBody as any,
-      },
-    });
+    const fields = {
+      tokenId: d.tokenId, channelId: d.channelId, apiKeyId: d.apiKeyId, publicModel: d.publicModel,
+      upstreamModel: d.upstreamModel, status: d.status, httpStatus: d.httpStatus, stream: d.stream,
+      promptTokens: d.usage.prompt_tokens, completionTokens: d.usage.completion_tokens, totalTokens: d.usage.total_tokens,
+      cost: d.cost, latencyMs: d.latencyMs, queueWaitMs: d.queueWaitMs, ttfbMs: d.ttfbMs, retries: d.retries,
+      clientIp: d.clientIp, userAgent: d.userAgent, errorMessage: d.errorMessage,
+      requestBody: d.requestBody as any, responseBody: d.responseBody as any,
+    };
+    // The route creates the QUEUED row synchronously; here we finalize it (create as fallback).
+    const log = await prisma.requestLog.upsert({ where: { requestId: d.requestId }, update: fields, create: { requestId: d.requestId, ...fields } });
     if (d.tokenId && d.usage.total_tokens > 0) {
       await prisma.accessToken.update({ where: { id: d.tokenId }, data: { tokensUsed: { increment: d.usage.total_tokens }, lastUsedAt: new Date() } });
       // bust auth cache so quota enforcement sees fresh counters

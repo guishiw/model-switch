@@ -3,13 +3,14 @@ import { inflightCounts } from './queue/channel-concurrency';
 
 export async function getDashboardStats(prisma: PrismaClient) {
   const since24h = new Date(Date.now() - 24 * 3600_000);
+  const terminal = { notIn: ['QUEUED', 'RUNNING'] as any[] };
 
   const [totals, byStatus, hourly, byModel, latency, channels] = await Promise.all([
-    prisma.requestLog.aggregate({ where: { createdAt: { gte: since24h } }, _count: true, _sum: { totalTokens: true, cost: true }, _avg: { latencyMs: true } }),
-    prisma.requestLog.groupBy({ by: ['status'], where: { createdAt: { gte: since24h } }, _count: true }),
+    prisma.requestLog.aggregate({ where: { createdAt: { gte: since24h }, status: terminal }, _count: true, _sum: { totalTokens: true, cost: true }, _avg: { latencyMs: true } }),
+    prisma.requestLog.groupBy({ by: ['status'], where: { createdAt: { gte: since24h }, status: terminal }, _count: true }),
     prisma.$queryRaw<Array<{ hour: Date; requests: bigint; tokens: bigint; failures: bigint }>>`
       SELECT DATE_FORMAT(createdAt, '%Y-%m-%d %H:00:00') AS hour, COUNT(*) AS requests, COALESCE(SUM(totalTokens),0) AS tokens,
-             SUM(CASE WHEN status <> 'SUCCESS' THEN 1 ELSE 0 END) AS failures
+             SUM(CASE WHEN status NOT IN ('SUCCESS','QUEUED','RUNNING') THEN 1 ELSE 0 END) AS failures
       FROM RequestLog WHERE createdAt >= ${since24h} GROUP BY 1 ORDER BY 1`,
     prisma.requestLog.groupBy({ by: ['publicModel'], where: { createdAt: { gte: since24h } }, _count: true, _sum: { totalTokens: true, cost: true }, orderBy: { _count: { publicModel: 'desc' } }, take: 10 }),
     prisma.$queryRaw<Array<{ p50: number; p90: number; p99: number }>>`

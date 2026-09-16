@@ -12,6 +12,7 @@ import { countMessages } from '@/lib/relay/tokens';
 import { auditText, createStreamAuditor, recordAuditHit } from '@/lib/audit';
 import { buildSessionContext } from '@/lib/session';
 import { clientIp, sseComment, sseData, sseEvent, sseHeaders } from '@/lib/http';
+import { createPendingLog, markRunning } from '@/lib/request-log';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -56,6 +57,10 @@ export async function POST(req: NextRequest) {
     const parsed = ChatCompletionRequestSchema.safeParse(await req.json().catch(() => null));
     if (!parsed.success) throw Errors.badRequest(parsed.error.issues.map((i) => `${i.path.join('.')}: ${i.message}`).join('; '));
     body = parsed.data;
+
+    // Show the request in the admin log immediately (QUEUED); later transitions update this row.
+    await createPendingLog({ requestId, tokenId: ctx.token.id, publicModel: body.model, stream: body.stream, clientIp: ip, userAgent: ua, requestBody: body });
+
     const allowed = allowedModelsOf(ctx.token);
     if (allowed.length && !allowed.includes(body.model)) throw Errors.forbidden(`model '${body.model}' not allowed for this token`);
 
@@ -90,6 +95,9 @@ export async function POST(req: NextRequest) {
       const status: LogJobData['status'] = err.status === 429 ? 'REJECTED_RATE_LIMIT' : err.code === 'queue_timeout' ? 'QUEUE_TIMEOUT' : 'FAILED';
       return fail(err, status);
     }
+    if (req.signal.aborted || (err as Error)?.message === 'ABORTED' || (err as Error)?.name === 'AbortError') {
+      return fail(new RelayError(499, 'client closed request', 'client_closed'), 'CANCELLED');
+    }
     log.error({ err }, 'unhandled relay error');
     return fail(new RelayError(500, 'Internal server error', 'server_error'));
   }
@@ -102,6 +110,7 @@ async function handleNonStream(requestId: string, ctx: Ctx, body: ChatCompletion
     if (e.message === 'QUEUE_TIMEOUT') throw Errors.queueTimeout(10);
     throw e;
   });
+  markRunning(requestId, slot.waitedMs);
   try {
     const { response, meta } = await relayComplete(requestId, body, req.signal);
 
@@ -141,6 +150,7 @@ async function handleStream(requestId: string, ctx: Ctx, body: ChatCompletionReq
           signal: req.signal,
           onProgress: (p) => send(progress ? sseEvent('queue', { position: p.position, eta_seconds: p.etaSeconds, active: p.active }) : sseComment(`queued position=${p.position}`)),
         });
+        markRunning(requestId, slot.waitedMs);
 
         const auditor = createStreamAuditor();
         const gen = relayStream(requestId, body, req.signal);
@@ -169,11 +179,12 @@ async function handleStream(requestId: string, ctx: Ctx, body: ChatCompletionReq
         logged = true;
         controller.close();
       } catch (err) {
-        const e = err instanceof RelayError ? err : (err as Error).message === 'QUEUE_TIMEOUT' ? Errors.queueTimeout(10) : (err as Error).message === 'ABORTED' ? new RelayError(499, 'client closed request') : new RelayError(502, (err as Error)?.message ?? 'stream failed', 'upstream_error');
+        const aborted = req.signal.aborted || (err as Error)?.message === 'ABORTED' || (err as Error)?.name === 'AbortError';
+        const e = err instanceof RelayError ? err : (err as Error).message === 'QUEUE_TIMEOUT' ? Errors.queueTimeout(10) : aborted ? new RelayError(499, 'client closed request', 'client_closed') : new RelayError(502, (err as Error)?.message ?? 'stream failed', 'upstream_error');
         if (e.status !== 499) log.warn({ err: e.message, status: e.status }, 'stream failed');
         send(sseData({ error: { message: e.message, type: e.type, code: e.code ?? null } }));
         send(encoder.encode('data: [DONE]\n\n'));
-        if (!logged) enqueueLog(base(e.code === 'queue_timeout' ? 'QUEUE_TIMEOUT' : 'FAILED', e.status, slot?.waitedMs ?? 0, undefined, e.message));
+        if (!logged) enqueueLog(base(e.code === 'queue_timeout' ? 'QUEUE_TIMEOUT' : e.status === 499 ? 'CANCELLED' : 'FAILED', e.status, slot?.waitedMs ?? 0, undefined, e.message));
         try { controller.close(); } catch { /* already closed */ }
       } finally {
         await slot?.release();
