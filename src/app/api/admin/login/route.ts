@@ -10,8 +10,11 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: 'invalid credentials' }, { status: 401 });
   }
   const jwt = await signAdminJwt(user.id);
+  // Only mark the cookie Secure when the client actually reached us over HTTPS;
+  // otherwise browsers silently drop it on plain-http deployments.
+  const isHttps = req.nextUrl.protocol === 'https:' || req.headers.get('x-forwarded-proto') === 'https';
   const res = NextResponse.json({ ok: true });
-  res.cookies.set(ADMIN_COOKIE, jwt, { httpOnly: true, sameSite: 'lax', secure: process.env.NODE_ENV === 'production', path: '/', maxAge: 12 * 3600 });
+  res.cookies.set(ADMIN_COOKIE, jwt, { httpOnly: true, sameSite: 'lax', secure: isHttps, path: '/', maxAge: 12 * 3600 });
   return res;
 }
 
