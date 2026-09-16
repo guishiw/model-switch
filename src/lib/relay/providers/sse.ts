@@ -45,3 +45,17 @@ export async function readError(res: Response): Promise<string> {
 export const isRetriable = (status: number) => status === 408 || status === 409 || status === 429 || status >= 500;
 export const isKeyInvalid = (status: number, msg: string) =>
   status === 401 || (status === 403 && /key|auth/i.test(msg)) || (status === 429 && /quota|billing|insufficient/i.test(msg));
+
+import { Agent as UndiciAgent, fetch as undiciFetch } from 'undici';
+
+const insecureAgent = new UndiciAgent({ connect: { rejectUnauthorized: false } });
+
+/**
+ * fetch that optionally skips TLS certificate verification (channel config `{"insecureTls": true}`),
+ * for self-signed intranet endpoints. Uses undici directly so the setting stays per-channel
+ * instead of process-wide (NODE_TLS_REJECT_UNAUTHORIZED).
+ */
+export function upstreamFetch(url: string, init: RequestInit & { signal: AbortSignal }, insecureTls?: boolean): Promise<Response> {
+  if (!insecureTls) return fetch(url, init);
+  return undiciFetch(url, { ...(init as any), dispatcher: insecureAgent }) as unknown as Promise<Response>;
+}

@@ -3,7 +3,7 @@ const nextConfig = {
   output: 'standalone',
   experimental: {
     // pino / ioredis / bullmq must stay external to the server bundle
-    serverComponentsExternalPackages: ['pino', 'pino-pretty', 'ioredis', 'bullmq', 'tiktoken'],
+    serverComponentsExternalPackages: ['pino', 'pino-pretty', 'ioredis', 'bullmq', 'tiktoken', 'undici'],
   },
   // Expose OpenAI-style paths: /v1/chat/completions -> /api/v1/chat/completions
   async rewrites() {

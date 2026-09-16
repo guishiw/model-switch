@@ -21,7 +21,7 @@ const PRESETS: Record<string, string> = {
   OLLAMA: 'http://localhost:11434/v1',
 };
 
-const empty = { name: '', provider: 'OPENAI', baseUrl: PRESETS.OPENAI, weight: 10, priority: 0, rpmLimit: 0, tpmLimit: 0, keys: '', mappings: 'gpt-4o=gpt-4o' };
+const empty = { name: '', provider: 'OPENAI', baseUrl: PRESETS.OPENAI, weight: 10, priority: 0, rpmLimit: 0, tpmLimit: 0, keys: '', mappings: 'gpt-4o=gpt-4o', insecureTls: false };
 
 export function ChannelManager() {
   const [rows, setRows] = useState<Channel[]>([]);
@@ -35,8 +35,10 @@ export function ChannelManager() {
   async function create(e: React.FormEvent) {
     e.preventDefault();
     setBusy(true); setErr('');
+    const { insecureTls, ...rest } = form;
     const payload = {
-      ...form,
+      ...rest,
+      config: insecureTls ? { insecureTls: true } : undefined,
       keys: form.keys.split(/\n|,/).map((s) => s.trim()).filter(Boolean),
       mappings: form.mappings.split(/\n|,/).map((s) => s.trim()).filter(Boolean).map((line) => {
         const [publicModel, upstreamModel = publicModel] = line.split('=').map((s) => s.trim());
@@ -65,6 +67,9 @@ export function ChannelManager() {
               </Select>
             </div>
             <div><Label>Base URL</Label><Input required value={form.baseUrl} onChange={(e) => setForm({ ...form, baseUrl: e.target.value })} /></div>
+            <label className="flex items-center gap-2 text-xs text-muted-foreground">
+              <input type="checkbox" checked={form.insecureTls} onChange={(e) => setForm({ ...form, insecureTls: e.target.checked })} /> 跳过 TLS 证书校验（自签名内网服务）
+            </label>
             <div><Label>API Keys（每行一个，自动轮询）</Label>
               <textarea className="w-full rounded-md border border-border p-2 text-sm" rows={3} value={form.keys} onChange={(e) => setForm({ ...form, keys: e.target.value })} placeholder="sk-..." />
             </div>

@@ -1,7 +1,7 @@
 import { env } from '../../env';
 import type { ChatCompletionChunk, ChatCompletionRequest, ChatCompletionResponse, ChatMessage, Provider, UpstreamTarget } from '../types';
 import { UpstreamError } from '../types';
-import { isKeyInvalid, isRetriable, parseSSE, readError } from './sse';
+import { isKeyInvalid, isRetriable, parseSSE, readError, upstreamFetch } from './sse';
 
 /**
  * Translates OpenAI chat format <-> Anthropic Messages API (raw fetch; no SDK dependency on the hot path).
@@ -60,7 +60,7 @@ const mapStop = (r: string | null | undefined) =>
   r === 'end_turn' || r === 'stop_sequence' ? 'stop' : r === 'max_tokens' ? 'length' : r === 'tool_use' ? 'tool_calls' : r ?? null;
 
 async function call(target: UpstreamTarget, body: unknown, signal: AbortSignal) {
-  const res = await fetch(`${target.baseUrl}/v1/messages`, {
+  const res = await upstreamFetch(`${target.baseUrl}/v1/messages`, {
     method: 'POST',
     headers: {
       'content-type': 'application/json',
@@ -70,7 +70,7 @@ async function call(target: UpstreamTarget, body: unknown, signal: AbortSignal) 
     },
     body: JSON.stringify(body),
     signal: AbortSignal.any([signal, AbortSignal.timeout(env.UPSTREAM_TIMEOUT_MS)]),
-  });
+  }, target.config.insecureTls === true);
   if (!res.ok) {
     const msg = await readError(res);
     throw new UpstreamError(res.status, msg, isRetriable(res.status), isKeyInvalid(res.status, msg));

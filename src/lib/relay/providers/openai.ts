@@ -1,7 +1,7 @@
 import { env } from '../../env';
 import type { ChatCompletionChunk, ChatCompletionRequest, ChatCompletionResponse, Provider, UpstreamTarget } from '../types';
 import { UpstreamError } from '../types';
-import { isKeyInvalid, isRetriable, parseSSE, readError } from './sse';
+import { isKeyInvalid, isRetriable, parseSSE, readError, upstreamFetch } from './sse';
 
 /**
  * OpenAI + any OpenAI-compatible endpoint (Qwen compatible-mode, DeepSeek, Moonshot, vLLM, Ollama /v1 ...).
@@ -13,12 +13,12 @@ function buildBody(target: UpstreamTarget, req: ChatCompletionRequest, stream: b
 }
 
 async function call(target: UpstreamTarget, body: unknown, signal: AbortSignal) {
-  const res = await fetch(`${target.baseUrl}/chat/completions`, {
+  const res = await upstreamFetch(`${target.baseUrl}/chat/completions`, {
     method: 'POST',
     headers: { 'content-type': 'application/json', authorization: `Bearer ${target.apiKey}`, ...target.extraHeaders },
     body: JSON.stringify(body),
     signal: AbortSignal.any([signal, AbortSignal.timeout(env.UPSTREAM_TIMEOUT_MS)]),
-  });
+  }, target.config.insecureTls === true);
   if (!res.ok) {
     const msg = await readError(res);
     throw new UpstreamError(res.status, msg, isRetriable(res.status), isKeyInvalid(res.status, msg));

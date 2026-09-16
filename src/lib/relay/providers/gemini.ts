@@ -1,7 +1,7 @@
 import { env } from '../../env';
 import type { ChatCompletionChunk, ChatCompletionRequest, ChatCompletionResponse, Provider, UpstreamTarget } from '../types';
 import { UpstreamError } from '../types';
-import { isKeyInvalid, isRetriable, parseSSE, readError } from './sse';
+import { isKeyInvalid, isRetriable, parseSSE, readError, upstreamFetch } from './sse';
 
 /** OpenAI chat -> Gemini generateContent (text + basic function calling) */
 function toGemini(req: ChatCompletionRequest) {
@@ -37,12 +37,12 @@ const usageOf = (j: any) => ({
 async function call(target: UpstreamTarget, req: ChatCompletionRequest, stream: boolean, signal: AbortSignal) {
   const version = target.config.apiVersion ?? 'v1beta';
   const method = stream ? 'streamGenerateContent?alt=sse' : 'generateContent';
-  const res = await fetch(`${target.baseUrl}/${version}/models/${target.upstreamModel}:${method}`, {
+  const res = await upstreamFetch(`${target.baseUrl}/${version}/models/${target.upstreamModel}:${method}`, {
     method: 'POST',
     headers: { 'content-type': 'application/json', 'x-goog-api-key': target.apiKey, ...target.extraHeaders },
     body: JSON.stringify(toGemini(req)),
     signal: AbortSignal.any([signal, AbortSignal.timeout(env.UPSTREAM_TIMEOUT_MS)]),
-  });
+  }, target.config.insecureTls === true);
   if (!res.ok) {
     const msg = await readError(res);
     throw new UpstreamError(res.status, msg, isRetriable(res.status), isKeyInvalid(res.status, msg));
