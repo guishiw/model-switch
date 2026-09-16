@@ -1,4 +1,5 @@
 import type { PrismaClient } from '@prisma/client';
+import { inflightCounts } from './queue/channel-concurrency';
 
 export async function getDashboardStats(prisma: PrismaClient) {
   const since24h = new Date(Date.now() - 24 * 3600_000);
@@ -17,9 +18,10 @@ export async function getDashboardStats(prisma: PrismaClient) {
              COALESCE(MAX(CASE WHEN rn = CEIL(cnt * 0.99) THEN latencyMs END), 0) AS p99
       FROM (SELECT latencyMs, ROW_NUMBER() OVER (ORDER BY latencyMs) AS rn, COUNT(*) OVER () AS cnt
             FROM RequestLog WHERE createdAt >= ${since24h} AND status = 'SUCCESS') t`,
-    prisma.channel.findMany({ select: { id: true, name: true, status: true, provider: true, _count: { select: { keys: true } } } }),
+    prisma.channel.findMany({ select: { id: true, name: true, status: true, provider: true, maxConcurrency: true, _count: { select: { keys: true } } } }),
   ]);
 
+  const inflight = await inflightCounts(channels.map((c) => ({ id: c.id, models: [] })));
   const total = totals._count;
   const success = byStatus.find((s) => s.status === 'SUCCESS')?._count ?? 0;
 
@@ -35,6 +37,6 @@ export async function getDashboardStats(prisma: PrismaClient) {
     byStatus: byStatus.map((s) => ({ status: s.status, count: s._count })),
     hourly: hourly.map((h) => ({ hour: new Date(String(h.hour).replace(' ', 'T') + 'Z'), requests: Number(h.requests), tokens: Number(h.tokens), failures: Number(h.failures) })),
     byModel: byModel.map((m) => ({ model: m.publicModel, requests: m._count, tokens: m._sum.totalTokens ?? 0, cost: Number(m._sum.cost ?? 0) })),
-    channels,
+    channels: channels.map((c) => ({ ...c, inflight: inflight[c.id]?.channel ?? 0 })),
   };
 }

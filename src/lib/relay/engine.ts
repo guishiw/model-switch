@@ -21,6 +21,27 @@ export type RelayMeta = {
 
 type Attempt = { selection: Selection; req: ChatCompletionRequest };
 
+const CAPACITY_POLL_MS = 500;
+
+/**
+ * Select an upstream; if every candidate is merely at its concurrency cap, wait
+ * (up to QUEUE_MAX_WAIT_SECONDS) for a slot instead of failing.
+ */
+async function selectWithWait(requestId: string, model: string, estimated: number, exclude: Set<string>, signal: AbortSignal, firstAttempt: boolean): Promise<Selection | null> {
+  const deadline = Date.now() + env.QUEUE_MAX_WAIT_SECONDS * 1000;
+  while (true) {
+    const { selection, busy } = await selectUpstream(requestId, model, estimated, exclude);
+    if (selection) return selection;
+    if (!busy) {
+      if (firstAttempt) throw Errors.noChannel(model);
+      return null;
+    }
+    if (signal.aborted) throw new Error('ABORTED');
+    if (Date.now() >= deadline) throw Errors.rateLimited('All channels for this model are at their concurrency limit', 5);
+    await new Promise((r) => setTimeout(r, CAPACITY_POLL_MS));
+  }
+}
+
 /** Merge param template under the request (request wins), drop gateway-only fields */
 function applyTemplate(req: ChatCompletionRequest, defaults: Record<string, unknown>): ChatCompletionRequest {
   const merged: Record<string, unknown> = { ...defaults };
@@ -34,24 +55,24 @@ function applyTemplate(req: ChatCompletionRequest, defaults: Record<string, unkn
  * we move to the next channel.
  */
 async function withFailover<T>(
+  requestId: string,
   req: ChatCompletionRequest,
   estimatedTokens: number,
+  signal: AbortSignal,
   fn: (a: Attempt, attempt: number) => Promise<T>,
 ): Promise<{ result: T; selection: Selection; retries: number }> {
   const exclude = new Set<string>();
   let lastErr: unknown;
   for (let attempt = 0; attempt <= env.RELAY_MAX_RETRIES; attempt++) {
-    const selection = await selectUpstream(req.model, estimatedTokens, exclude);
-    if (!selection) {
-      if (attempt === 0) throw Errors.noChannel(req.model);
-      break;
-    }
+    const selection = await selectWithWait(requestId, req.model, estimatedTokens, exclude, signal, attempt === 0);
+    if (!selection) break;
     const upstreamReq = applyTemplate(req, selection.defaultParams);
     try {
       const result = await fn({ selection, req: upstreamReq }, attempt);
       await recordSuccess(selection.target.channelId);
       return { result, selection, retries: attempt };
     } catch (err) {
+      await selection.release();
       lastErr = err;
       if (err instanceof UpstreamError) {
         logger.warn({ channel: selection.target.channelName, status: err.status, msg: err.message, attempt }, 'upstream error');
@@ -73,10 +94,11 @@ async function withFailover<T>(
 export async function relayComplete(requestId: string, req: ChatCompletionRequest, signal: AbortSignal): Promise<{ response: ChatCompletionResponse; meta: RelayMeta }> {
   const estimated = countMessages(req.messages) + (req.max_tokens ?? 1024);
   const started = Date.now();
-  const { result, selection, retries } = await withFailover(req, estimated, async ({ selection, req }) => {
+  const { result, selection, retries } = await withFailover(requestId, req, estimated, signal, async ({ selection, req }) => {
     const provider = providerFor(selection.target.provider);
     return provider.complete(selection.target, req, signal);
   });
+  await selection.release();
   result.model = req.model; // present the public model name to the client
   const text = result.choices.map((c) => (typeof c.message.content === 'string' ? c.message.content : '')).join('');
   if (!result.usage.total_tokens) {
@@ -100,11 +122,8 @@ export async function* relayStream(requestId: string, req: ChatCompletionRequest
   let lastErr: unknown;
 
   for (let attempt = 0; attempt <= env.RELAY_MAX_RETRIES; attempt++) {
-    const selection = await selectUpstream(req.model, estimated, exclude);
-    if (!selection) {
-      if (attempt === 0) throw Errors.noChannel(req.model);
-      break;
-    }
+    const selection = await selectWithWait(requestId, req.model, estimated, exclude, signal, attempt === 0);
+    if (!selection) break;
     const upstreamReq = applyTemplate(req, selection.defaultParams);
     const provider = providerFor(selection.target.provider);
     const gen = provider.stream(selection.target, upstreamReq, signal);
@@ -145,6 +164,8 @@ export async function* relayStream(requestId: string, req: ChatCompletionRequest
       }
       if (err instanceof UpstreamError) await recordFailure(selection.target.channelId);
       throw err;
+    } finally {
+      await selection.release();
     }
   }
   if (lastErr instanceof UpstreamError) throw Errors.upstream(lastErr.status, lastErr.message);

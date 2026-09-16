@@ -86,6 +86,8 @@ model ModelMapping {
   publicModel     String
   upstreamModel   String
   enabled         Boolean        @default(true)
+  /// Max in-flight requests for this model on this channel (0 = unlimited)
+  maxConcurrency  Int            @default(0)
   /// Default params merged under the request; request values win.
   paramTemplateId String?
   paramTemplate   ParamTemplate? @relation(fields: [paramTemplateId], references: [id])

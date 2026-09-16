@@ -3,6 +3,7 @@ import { redis } from '../redis';
 import { decrypt } from '../crypto';
 import { circuitState } from '../circuit-breaker';
 import { checkChannelLimits } from '../ratelimit';
+import { acquireChannelSlot } from '../queue/channel-concurrency';
 import { logger } from '../logger';
 import type { UpstreamTarget } from './types';
 
@@ -56,17 +57,26 @@ async function pickKey(channelId: string, keys: Candidate['channel']['keys']) {
   return expanded[idx % expanded.length];
 }
 
-export type Selection = { target: UpstreamTarget; defaultParams: Record<string, unknown>; pricing: { input: number; output: number } };
+export type Selection = {
+  target: UpstreamTarget;
+  defaultParams: Record<string, unknown>;
+  pricing: { input: number; output: number };
+  /** Releases the channel/model concurrency slot. Must be called exactly once when the request finishes. */
+  release: () => Promise<void>;
+};
+
+export type SelectResult = { selection: Selection | null; /** true if at least one candidate was skipped only because it is at capacity */ busy: boolean };
 
 /**
  * Choose an upstream for `publicModel`, skipping channels that are
  * excluded (already failed this request), circuit-open, or rate-limited.
  */
-export async function selectUpstream(publicModel: string, estimatedTokens: number, exclude: Set<string>): Promise<Selection | null> {
+export async function selectUpstream(requestId: string, publicModel: string, estimatedTokens: number, exclude: Set<string>): Promise<SelectResult> {
   const candidates = (await loadCandidates(publicModel)).filter(
     (c) => !exclude.has(c.channelId) && c.channel.keys.length > 0,
   );
-  if (!candidates.length) return null;
+  let busy = false;
+  if (!candidates.length) return { selection: null, busy };
 
   // sort by priority desc, then try weighted picks within the top priority group
   const maxPriority = Math.max(...candidates.map((c) => c.channel.priority));
@@ -91,7 +101,16 @@ export async function selectUpstream(publicModel: string, estimatedTokens: numbe
       continue;
     }
 
-    return {
+    // per-channel / per-model concurrency (values come from the route cache; admin edits bust it)
+    const slot = await acquireChannelSlot(requestId, c.channelId, publicModel, c.channel.maxConcurrency, c.maxConcurrency);
+    if (!slot.ok) {
+      busy = true;
+      logger.debug({ channel: c.channel.name, limit: slot.reason }, 'channel at capacity, skipping');
+      continue;
+    }
+
+    return { busy, selection: {
+      release: slot.release,
       target: {
         channelId: c.channelId,
         channelName: c.channel.name,
@@ -105,9 +124,9 @@ export async function selectUpstream(publicModel: string, estimatedTokens: numbe
       },
       defaultParams: (c.paramTemplate?.params as Record<string, unknown>) ?? {},
       pricing: { input: Number(c.inputPricePerM), output: Number(c.outputPricePerM) },
-    };
+    } };
   }
-  return null;
+  return { selection: null, busy };
 }
 
 /** Disable a key after a definitive auth/quota error and bust caches */

@@ -10,7 +10,7 @@ type Stats = {
   summary: { requests24h: number; successRate: number; tokens24h: number; cost24h: number; avgLatencyMs: number; latency: { p50: number; p90: number; p99: number } };
   hourly: Array<{ hour: string; requests: number; tokens: number; failures: number }>;
   byModel: Array<{ model: string; requests: number; tokens: number; cost: number }>;
-  channels: Array<{ id: string; name: string; status: string; provider: string; _count: { keys: number } }>;
+  channels: Array<{ id: string; name: string; status: string; provider: string; maxConcurrency: number; inflight: number; _count: { keys: number } }>;
 };
 
 function Stat({ title, value, sub }: { title: string; value: React.ReactNode; sub?: string }) {
@@ -80,7 +80,7 @@ export function Dashboard() {
           {s.channels.map((c) => (
             <div key={c.id} className="flex items-center gap-2 rounded-md border border-border px-3 py-1.5 text-sm">
               <span className="font-medium">{c.name}</span>
-              <span className="text-xs text-muted-foreground">{c.provider} · {c._count.keys} keys</span>
+              <span className="text-xs text-muted-foreground">{c.provider} · {c._count.keys} keys · 并发 {c.inflight}/{c.maxConcurrency || '∞'}</span>
               <Badge tone={statusTone(c.status)}>{c.status}</Badge>
             </div>
           ))}

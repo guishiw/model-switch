@@ -13,18 +13,21 @@ const PatchSchema = z.object({
   priority: z.number().int().optional(),
   rpmLimit: z.number().int().min(0).optional(),
   tpmLimit: z.number().int().min(0).optional(),
+  maxConcurrency: z.number().int().min(0).optional(),
+  /** Update concurrency limits of existing mappings in place (no re-create) */
+  mappingLimits: z.array(z.object({ publicModel: z.string(), maxConcurrency: z.number().int().min(0) })).optional(),
   extraHeaders: z.record(z.string()).optional(),
   config: z.record(z.any()).optional(),
   addKeys: z.array(z.string().min(1)).optional(),
   removeKeyIds: z.array(z.string()).optional(),
   enableKeyIds: z.array(z.string()).optional(),
-  mappings: z.array(z.object({ publicModel: z.string(), upstreamModel: z.string(), paramTemplateId: z.string().nullable().optional(), enabled: z.boolean().optional(), inputPricePerM: z.number().optional(), outputPricePerM: z.number().optional() })).optional(),
+  mappings: z.array(z.object({ publicModel: z.string(), upstreamModel: z.string(), paramTemplateId: z.string().nullable().optional(), enabled: z.boolean().optional(), maxConcurrency: z.number().int().min(0).optional(), inputPricePerM: z.number().optional(), outputPricePerM: z.number().optional() })).optional(),
 });
 
 export async function PATCH(req: NextRequest, { params }: { params: { id: string } }) {
   const p = PatchSchema.safeParse(await req.json().catch(() => null));
   if (!p.success) return NextResponse.json({ error: p.error.flatten() }, { status: 400 });
-  const { addKeys, removeKeyIds, enableKeyIds, mappings, ...data } = p.data;
+  const { addKeys, removeKeyIds, enableKeyIds, mappings, mappingLimits, ...data } = p.data;
 
   const ch = await prisma.$transaction(async (tx) => {
     const c = await tx.channel.update({ where: { id: params.id }, data });
@@ -34,6 +37,9 @@ export async function PATCH(req: NextRequest, { params }: { params: { id: string
     if (mappings) {
       await tx.modelMapping.deleteMany({ where: { channelId: c.id } });
       await tx.modelMapping.createMany({ data: mappings.map((m) => ({ ...m, channelId: c.id })) });
+    }
+    for (const m of mappingLimits ?? []) {
+      await tx.modelMapping.updateMany({ where: { channelId: c.id, publicModel: m.publicModel }, data: { maxConcurrency: m.maxConcurrency } });
     }
     return tx.channel.findUniqueOrThrow({ where: { id: c.id }, include: { keys: true, modelMappings: true } });
   });
