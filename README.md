@@ -16,6 +16,8 @@ npm run worker:dev              # 任务调度层（异步队列 / 日志入库 
 
 生产：`docker compose up -d --build`（web + 2 个 worker 副本）。
 
+健康检查：`GET /livez` 只检查 Web 进程存活；`GET /readyz` 检查 MySQL 与 Redis，只有两者均可用时返回 200。负载均衡应使用 `/readyz`。
+
 ## 调用示例
 
 ```bash
@@ -62,6 +64,8 @@ Worker: `stats` 队列每 5 分钟汇总 UsageStatHourly
 Admin:  /admin (JWT cookie, edge middleware 保护) 渠道 / 令牌 / 日志 / 实时监控
 ```
 
+`X-Async` 作业默认最多执行 3 次并使用指数退避；最终失败进入 BullMQ `relay-dead-letter` 队列，供运维审查和人工补偿。4xx 等不可恢复错误不会重复执行。可通过 `ASYNC_JOB_ATTEMPTS` 和 `ASYNC_JOB_BACKOFF_MS` 调整。
+
 ## 目录结构
 
 ```
@@ -91,4 +95,4 @@ src/app/admin/                后台页面；src/components/admin 组件；src/c
 
 ## 关键环境变量
 
-见 `.env.example`。`GLOBAL_MAX_CONCURRENCY` 控制并发上限，`QUEUE_MAX_WAIT_SECONDS` 为最长排队时间，`CIRCUIT_FAILURE_THRESHOLD/CIRCUIT_OPEN_SECONDS` 控制熔断；`UPSTREAM_TTFB_TIMEOUT_MS`（首字节，默认 60s）与 `UPSTREAM_TOTAL_TIMEOUT_MS`（单次调用总时长，默认 10 分钟）为上游双超时，超时返回 504 并参与故障转移。
+见 `.env.example`。设置 `REDIS_SENTINELS` 后，Web 与 Worker 使用 Sentinel 自动发现主节点；不设置时继续使用 `REDIS_URL`。`GLOBAL_MAX_CONCURRENCY` 控制并发上限，`QUEUE_MAX_WAIT_SECONDS` 为最长排队时间，`CIRCUIT_FAILURE_THRESHOLD/CIRCUIT_OPEN_SECONDS` 控制熔断；`UPSTREAM_TTFB_TIMEOUT_MS`（首字节，默认 60s）与 `UPSTREAM_TOTAL_TIMEOUT_MS`（单次调用总时长，默认 10 分钟）为上游双超时，超时返回 504 并参与故障转移。

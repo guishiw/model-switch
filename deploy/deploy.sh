@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # Plain-docker deployment (no docker-compose needed; works on Docker 18.09+).
 # Usage: ./deploy/deploy.sh [--seed]
-#   Expects .env in the project root with DATABASE_URL / REDIS_URL pointing at
-#   ms-postgres / ms-redis (see deploy/env.server.example).
+#   Expects .env in the project root with database and Redis/Sentinel settings
+#   (see deploy/env.server.example).
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
@@ -11,6 +11,7 @@ HOST_PORT="${HOST_PORT:-9003}"
 # Local Postgres/Redis containers are only started when DATABASE_URL / REDIS_URL point at them.
 DB_URL="$(grep -E '^DATABASE_URL=' .env | cut -d= -f2- || true)"
 REDIS_URL_VAL="$(grep -E '^REDIS_URL=' .env | cut -d= -f2- || true)"
+REDIS_SENTINELS_VAL="$(grep -E '^REDIS_SENTINELS=' .env | cut -d= -f2- || true)"
 PG_PASSWORD="${PG_PASSWORD:-$(grep -E '^PG_PASSWORD=' .env | cut -d= -f2- || true)}"
 
 log() { printf '\n\033[1;34m==> %s\033[0m\n' "$*"; }
@@ -31,7 +32,7 @@ fi
 docker start ms-postgres >/dev/null
 fi
 
-if [[ "$REDIS_URL_VAL" == *"@ms-redis"* || "$REDIS_URL_VAL" == *"//ms-redis"* ]]; then
+if [[ -z "$REDIS_SENTINELS_VAL" && ( "$REDIS_URL_VAL" == *"@ms-redis"* || "$REDIS_URL_VAL" == *"//ms-redis"* ) ]]; then
 log "redis"
 if ! docker ps -a --format '{{.Names}}' | grep -qx ms-redis; then
   docker run -d --name ms-redis --network $NET --restart unless-stopped \
@@ -68,6 +69,21 @@ docker run -d --name ms-web --network $NET --restart unless-stopped \
   -p "${HOST_PORT}:3000" model-switch-web:latest
 docker run -d --name ms-worker --network $NET --restart unless-stopped \
   --env-file .env -e NODE_ENV=production model-switch-worker:latest
+
+log "wait for readiness"
+ready=0
+for i in $(seq 1 30); do
+  if curl -fsS "http://127.0.0.1:${HOST_PORT}/readyz" >/dev/null; then
+    ready=1
+    break
+  fi
+  sleep 2
+done
+if [ "$ready" -ne 1 ]; then
+  log "readiness check failed"
+  docker logs --tail 100 ms-web
+  exit 1
+fi
 
 log "cleanup dangling images"
 docker image prune -f >/dev/null

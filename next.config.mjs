@@ -7,7 +7,11 @@ const nextConfig = {
   },
   // Expose OpenAI-style paths: /v1/chat/completions -> /api/v1/chat/completions
   async rewrites() {
-    return [{ source: '/v1/:path*', destination: '/api/v1/:path*' }];
+    return [
+      { source: '/livez', destination: '/api/livez' },
+      { source: '/readyz', destination: '/api/readyz' },
+      { source: '/v1/:path*', destination: '/api/v1/:path*' },
+    ];
   },
 };
 export default nextConfig;

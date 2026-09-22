@@ -1,5 +1,5 @@
 import 'dotenv/config';
-import { Worker, type Job } from 'bullmq';
+import { UnrecoverableError, Worker, type Job } from 'bullmq';
 import { redis } from '../lib/redis';
 import { prisma } from '../lib/prisma';
 import { logger } from '../lib/logger';
@@ -7,7 +7,7 @@ import { env } from '../lib/env';
 import { acquireSlot } from '../lib/queue/concurrency';
 import { relayComplete, computeCost } from '../lib/relay/engine';
 import { persistTurn } from '../lib/session';
-import { statsQueue, type LogJobData, type RelayJobData } from '../lib/queue';
+import { relayDeadLetterQueue, statsQueue, type LogJobData, type RelayJobData } from '../lib/queue';
 import { RelayError } from '../lib/errors';
 
 const prefix = process.env.QUEUE_PREFIX ?? 'ms';
@@ -45,11 +45,16 @@ const relayWorker = new Worker<RelayJobData>(
       return response;
     } catch (err) {
       const e = err instanceof RelayError ? err : new RelayError(500, (err as Error).message);
-      await logQueueAdd({
-        requestId, tokenId: job.data.tokenId, publicModel: request.model, status: 'FAILED', httpStatus: e.status, stream: false,
-        usage: { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 }, cost: 0, latencyMs: Date.now() - started, queueWaitMs: slot.waitedMs,
-        retries: 0, errorMessage: e.message, requestBody: request,
-      });
+      const retryable = e.status === 429 || e.status >= 500;
+      const finalAttempt = !retryable || job.attemptsMade + 1 >= (job.opts.attempts ?? 1);
+      if (finalAttempt) {
+        await logQueueAdd({
+          requestId, tokenId: job.data.tokenId, publicModel: request.model, status: 'FAILED', httpStatus: e.status, stream: false,
+          usage: { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 }, cost: 0, latencyMs: Date.now() - started, queueWaitMs: slot.waitedMs,
+          retries: job.attemptsMade, errorMessage: e.message, requestBody: request,
+        });
+      }
+      if (!retryable) throw new UnrecoverableError(e.message);
       throw e;
     } finally {
       await slot.release();
@@ -97,6 +102,18 @@ const statsWorker = new Worker('stats', async () => rollupHour(prisma), { connec
 async function main() {
   await statsQueue.add('rollup', {}, { repeat: { every: 5 * 60 * 1000 }, jobId: 'rollup-hourly' });
   logger.info('worker started');
+  relayWorker.on('failed', async (job, err) => {
+    if (!job) return;
+    const finalAttempt = err instanceof UnrecoverableError || job.attemptsMade >= (job.opts.attempts ?? 1);
+    if (!finalAttempt) return;
+    await relayDeadLetterQueue.add('failed-relay', {
+      ...job.data,
+      originalJobId: String(job.id),
+      attemptsMade: job.attemptsMade,
+      failedAt: new Date().toISOString(),
+      errorMessage: err.message,
+    }, { jobId: String(job.id) }).catch((dlqErr) => logger.error({ err: dlqErr, jobId: job.id }, 'failed to enqueue dead letter'));
+  });
   for (const w of [relayWorker, logWorker, statsWorker]) {
     w.on('failed', (job, err) => logger.error({ queue: w.name, jobId: job?.id, err: err.message }, 'job failed'));
   }
