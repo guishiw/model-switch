@@ -21,7 +21,7 @@ ENV PRISMA_ENGINES_MIRROR=${PRISMA_ENGINES_MIRROR}
 ENV NEXT_TELEMETRY_DISABLED=1
 # Build-time placeholders only: env.ts validates at import time during page-data collection.
 # Real values come from --env-file at runtime.
-ENV DATABASE_URL=postgresql://build:build@localhost:5432/build \
+ENV DATABASE_URL=mysql://build:build@localhost:3306/build \
     ADMIN_JWT_SECRET=build-time-placeholder-secret-not-used-at-runtime
 RUN npx prisma generate && npm run build
 
