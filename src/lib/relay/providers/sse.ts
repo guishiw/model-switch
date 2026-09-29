@@ -27,6 +27,7 @@ export async function* parseSSE(body: ReadableStream<Uint8Array>): AsyncGenerato
     }
     if (data.length) yield { event, data: data.join('\n') };
   } finally {
+    try { await reader.cancel(); } catch { /* body already closed/errored */ }
     reader.releaseLock();
   }
 }

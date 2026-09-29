@@ -93,50 +93,79 @@ export async function acquireSlot(opts: WaitOptions): Promise<{ release: () => P
   const maxWait = opts.maxWaitMs ?? env.QUEUE_MAX_WAIT_SECONDS * 1000;
   const enqueuedAt = Date.now();
 
-  const first = await tryAcquire(id, tier, enqueuedAt);
+  if (signal?.aborted) throw new Error('ABORTED');
+
+  let first: Admission;
+  try {
+    first = await tryAcquire(id, tier, enqueuedAt);
+  } catch (err) {
+    await release(id).catch(() => {});
+    throw err;
+  }
+  if (signal?.aborted) {
+    await release(id);
+    throw new Error('ABORTED');
+  }
   if (first.granted) return { release: () => release(id), waitedMs: 0 };
 
-  await ensureSubscribed();
+  try {
+    await ensureSubscribed();
+  } catch (err) {
+    await release(id).catch(() => {});
+    throw err;
+  }
   logger.debug({ id, position: first.position }, 'request queued');
 
   return new Promise((resolve, reject) => {
     let done = false;
+    let attempting = false;
+    let ticker: ReturnType<typeof setInterval> | undefined;
+    let timer: ReturnType<typeof setTimeout> | undefined;
     const cleanup = () => {
       done = true;
       waiters.delete(wake);
-      clearInterval(ticker);
-      clearTimeout(timer);
+      if (ticker) clearInterval(ticker);
+      if (timer) clearTimeout(timer);
       signal?.removeEventListener('abort', onAbort);
     };
-    const finish = async (err?: Error) => {
+    const finish = async (err: Error) => {
       if (done) return;
       cleanup();
-      if (err) {
-        await leaveQueue(id);
-        reject(err);
-      }
+      // Removing both WAIT and ACTIVE makes abort/timeout safe even when a
+      // concurrent Redis acquire has just granted the slot.
+      await release(id).catch((releaseErr) => logger.warn({ err: releaseErr, id }, 'failed to release aborted queue slot'));
+      reject(err);
     };
     const attempt = async () => {
-      if (done) return;
+      if (done || attempting) return;
+      attempting = true;
       try {
         const r = await tryAcquire(id, tier, enqueuedAt);
-        if (r.granted && !done) {
+        if (done || signal?.aborted) {
+          // The in-flight Lua call may have re-added WAIT even when it did not
+          // grant ACTIVE, so always remove both entries after cancellation.
+          await release(id).catch((releaseErr) => logger.warn({ err: releaseErr, id }, 'failed to release raced queue slot'));
+          if (!done) await finish(new Error('ABORTED'));
+        } else if (r.granted) {
           cleanup();
           resolve({ release: () => release(id), waitedMs: Date.now() - enqueuedAt });
-        } else if (!done) {
+        } else {
           // crude ETA: assume average service time of 8s per slot
           onProgress?.({ position: r.position + 1, active: r.active, etaSeconds: Math.ceil(((r.position + 1) / Math.max(1, env.GLOBAL_MAX_CONCURRENCY)) * 8) });
         }
       } catch (e) {
-        finish(e as Error);
+        await finish(e as Error);
+      } finally {
+        attempting = false;
       }
     };
     const wake = () => void attempt();
-    const onAbort = () => finish(new Error('ABORTED'));
+    const onAbort = () => void finish(new Error('ABORTED'));
 
     waiters.add(wake);
-    const ticker = setInterval(attempt, env.QUEUE_PROGRESS_INTERVAL_MS);
-    const timer = setTimeout(() => finish(new Error('QUEUE_TIMEOUT')), maxWait);
-    signal?.addEventListener('abort', onAbort);
+    ticker = setInterval(attempt, env.QUEUE_PROGRESS_INTERVAL_MS);
+    timer = setTimeout(() => void finish(new Error('QUEUE_TIMEOUT')), maxWait);
+    if (signal?.aborted) onAbort();
+    else signal?.addEventListener('abort', onAbort, { once: true });
   });
 }

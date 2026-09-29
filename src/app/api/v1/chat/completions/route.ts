@@ -7,7 +7,7 @@ import { checkTokenLimits } from '@/lib/ratelimit';
 import { acquireSlot } from '@/lib/queue/concurrency';
 import { enqueueLog, enqueueRelay, type LogJobData } from '@/lib/queue';
 import { ChatCompletionRequestSchema, type ChatCompletionRequest } from '@/lib/relay/types';
-import { relayComplete, relayStream, computeCost } from '@/lib/relay/engine';
+import { relayComplete, relayStream, computeCost, type RelayMeta } from '@/lib/relay/engine';
 import { UpstreamError } from '@/lib/relay/types';
 import { countMessages } from '@/lib/relay/tokens';
 import { auditText, createStreamAuditor, recordAuditHit } from '@/lib/audit';
@@ -92,12 +92,12 @@ export async function POST(req: NextRequest) {
       ? await handleStream(requestId, ctx, body, req, started, ip, ua, wantProgress ?? false)
       : await handleNonStream(requestId, ctx, body, req, started, ip, ua);
   } catch (err) {
+    if (req.signal.aborted || (err as Error)?.message === 'ABORTED' || (err as Error)?.name === 'AbortError') {
+      return fail(new RelayError(499, 'client closed request', 'client_closed'), 'CANCELLED');
+    }
     if (err instanceof RelayError) {
       const status: LogJobData['status'] = err.status === 429 ? 'REJECTED_RATE_LIMIT' : err.code === 'queue_timeout' ? 'QUEUE_TIMEOUT' : 'FAILED';
       return fail(err, status);
-    }
-    if (req.signal.aborted || (err as Error)?.message === 'ABORTED' || (err as Error)?.name === 'AbortError') {
-      return fail(new RelayError(499, 'client closed request', 'client_closed'), 'CANCELLED');
     }
     if (err instanceof UpstreamError) return fail(Errors.upstream(err.status, err.message));
     log.error({ err }, 'unhandled relay error');
@@ -108,15 +108,18 @@ export async function POST(req: NextRequest) {
 type Ctx = Awaited<ReturnType<typeof authenticateBearer>>;
 
 async function handleNonStream(requestId: string, ctx: Ctx, body: ChatCompletionRequest, req: NextRequest, started: number, ip?: string, ua?: string) {
-  const slot = await acquireSlot({ id: requestId, tier: ctx.user.tier, signal: req.signal }).catch((e: Error) => {
+  const slotOwnerId = crypto.randomUUID();
+  const slot = await acquireSlot({ id: slotOwnerId, tier: ctx.user.tier, signal: req.signal }).catch((e: Error) => {
     if (e.message === 'QUEUE_TIMEOUT') throw Errors.queueTimeout(10);
     throw e;
   });
   markRunning(requestId, slot.waitedMs);
   try {
-    const { response, meta } = await relayComplete(requestId, body, req.signal);
+    const { response, meta } = await relayComplete(requestId, body, req.signal, slotOwnerId);
+    if (req.signal.aborted) throw new Error('ABORTED');
 
     const out = await auditText(meta.outputText);
+    if (req.signal.aborted) throw new Error('ABORTED');
     if (out.blocked) {
       await recordAuditHit(requestId, 'output', out.matched, meta.outputText);
       throw Errors.audit(out.matched);
@@ -137,9 +140,30 @@ async function handleNonStream(requestId: string, ctx: Ctx, body: ChatCompletion
 
 async function handleStream(requestId: string, ctx: Ctx, body: ChatCompletionRequest, req: NextRequest, started: number, ip: string | undefined, ua: string | undefined, progress: boolean) {
   const log = logger.child({ requestId });
+  const slotOwnerId = crypto.randomUUID();
+  const relayAbort = new AbortController();
+  const abortRelay = (reason?: unknown) => {
+    if (!relayAbort.signal.aborted) {
+      relayAbort.abort(reason instanceof Error ? reason : new DOMException('client aborted', 'AbortError'));
+    }
+  };
+  const onClientAbort = () => abortRelay(req.signal.reason);
+  if (req.signal.aborted) onClientAbort();
+  else req.signal.addEventListener('abort', onClientAbort, { once: true });
+
+  let gen: ReturnType<typeof relayStream> | undefined;
   const stream = new ReadableStream<Uint8Array>({
     async start(controller) {
-      const send = (b: Uint8Array) => { try { controller.enqueue(b); } catch { /* client gone */ } };
+      const send = (b: Uint8Array) => {
+        if (relayAbort.signal.aborted) return false;
+        try {
+          controller.enqueue(b);
+          return true;
+        } catch {
+          abortRelay();
+          return false;
+        }
+      };
       let slot: Awaited<ReturnType<typeof acquireSlot>> | undefined;
       let usage = { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 };
       let logged = false;
@@ -148,16 +172,21 @@ async function handleStream(requestId: string, ctx: Ctx, body: ChatCompletionReq
       try {
         // Queue wait. Keep the connection warm with SSE comments / progress events.
         slot = await acquireSlot({
-          id: requestId,
+          id: slotOwnerId,
           tier: ctx.user.tier,
-          signal: req.signal,
-          onProgress: (p) => send(progress ? sseEvent('queue', { position: p.position, eta_seconds: p.etaSeconds, active: p.active }) : sseComment(`queued position=${p.position}`)),
+          signal: relayAbort.signal,
+          onProgress: (p) => {
+            if (!send(progress ? sseEvent('queue', { position: p.position, eta_seconds: p.etaSeconds, active: p.active }) : sseComment(`queued position=${p.position}`))) {
+              throw new Error('ABORTED');
+            }
+          },
         });
+        if (relayAbort.signal.aborted) throw new Error('ABORTED');
         markRunning(requestId, slot.waitedMs);
 
         const auditor = createStreamAuditor();
-        const gen = relayStream(requestId, body, req.signal);
-        let meta: Awaited<ReturnType<typeof gen.return>>['value'] | undefined;
+        gen = relayStream(requestId, body, relayAbort.signal, slotOwnerId);
+        let meta: RelayMeta | undefined;
 
         while (true) {
           const { value, done } = await gen.next();
@@ -168,34 +197,47 @@ async function handleStream(requestId: string, ctx: Ctx, body: ChatCompletionReq
             const r = await auditor.check(delta);
             if (r.blocked) {
               await recordAuditHit(requestId, 'output', r.matched, delta);
-              send(sseData({ error: { message: `Content blocked by policy: ${r.matched.join(', ')}`, type: 'content_policy_violation', code: 'content_filter' } }));
-              send(encoder.encode('data: [DONE]\n\n'));
+              if (!send(sseData({ error: { message: `Content blocked by policy: ${r.matched.join(', ')}`, type: 'content_policy_violation', code: 'content_filter' } })) ||
+                  !send(encoder.encode('data: [DONE]\n\n'))) {
+                throw new Error('ABORTED');
+              }
               enqueueLog(base('REJECTED_AUDIT', 400, slot.waitedMs, meta, `blocked: ${r.matched.join(',')}`));
               logged = true;
-              return controller.close();
+              abortRelay(new Error('OUTPUT_BLOCKED'));
+              try { controller.close(); } catch { /* client gone */ }
+              return;
             }
           }
-          send(sseData(value));
+          if (!send(sseData(value))) throw new Error('ABORTED');
         }
-        send(encoder.encode('data: [DONE]\n\n'));
+        if (relayAbort.signal.aborted) throw new Error('ABORTED');
+        if (!send(encoder.encode('data: [DONE]\n\n'))) throw new Error('ABORTED');
         usage = meta!.usage;
         enqueueLog({ ...base('SUCCESS', 200, slot.waitedMs, meta), sessionId: body.session_id, outputText: meta!.outputText });
         logged = true;
-        controller.close();
+        try { controller.close(); } catch { /* client gone */ }
       } catch (err) {
-        const aborted = req.signal.aborted || (err as Error)?.message === 'ABORTED' || (err as Error)?.name === 'AbortError';
-        const e = err instanceof RelayError ? err
+        const aborted = relayAbort.signal.aborted || (err as Error)?.message === 'ABORTED' || (err as Error)?.name === 'AbortError';
+        const e = aborted ? new RelayError(499, 'client closed request', 'client_closed')
+          : err instanceof RelayError ? err
           : (err as Error).message === 'QUEUE_TIMEOUT' ? Errors.queueTimeout(10)
-          : aborted ? new RelayError(499, 'client closed request', 'client_closed')
           : err instanceof UpstreamError ? Errors.upstream(err.status, err.message)   // e.g. 504 mid-stream timeout
           : new RelayError(502, (err as Error)?.message ?? 'stream failed', 'upstream_error');
         if (e.status !== 499) log.warn({ err: e.message, status: e.status }, 'stream failed');
-        send(sseData({ error: { message: e.message, type: e.type, code: e.code ?? null } }));
-        send(encoder.encode('data: [DONE]\n\n'));
+        if (!aborted) {
+          send(sseData({ error: { message: e.message, type: e.type, code: e.code ?? null } }));
+          send(encoder.encode('data: [DONE]\n\n'));
+        }
         if (!logged) enqueueLog(base(e.code === 'queue_timeout' ? 'QUEUE_TIMEOUT' : e.status === 499 ? 'CANCELLED' : 'FAILED', e.status, slot?.waitedMs ?? 0, undefined, e.message));
         try { controller.close(); } catch { /* already closed */ }
       } finally {
-        await slot?.release();
+        try {
+          await gen?.return(undefined as never);
+        } catch (err) {
+          if (!relayAbort.signal.aborted) log.warn({ err }, 'failed to close upstream stream');
+        }
+        await slot?.release().catch((err) => log.warn({ err }, 'failed to release global slot'));
+        req.signal.removeEventListener('abort', onClientAbort);
       }
 
       function base(status: LogJobData['status'], httpStatus: number, queueWaitMs: number, meta: any, errorMessage?: string): LogJobData {
@@ -208,7 +250,10 @@ async function handleStream(requestId: string, ctx: Ctx, body: ChatCompletionReq
         };
       }
     },
-    cancel() { log.debug('client cancelled stream'); },
+    cancel(reason) {
+      log.debug('client cancelled stream');
+      abortRelay(reason);
+    },
   });
 
   return new Response(stream, { headers: sseHeaders({ 'x-request-id': requestId }) });

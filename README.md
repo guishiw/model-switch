@@ -66,6 +66,8 @@ Admin:  /admin (JWT cookie, edge middleware 保护) 渠道 / 令牌 / 日志 / �
 
 `X-Async` 作业默认最多执行 3 次并使用指数退避；最终失败进入 BullMQ `relay-dead-letter` 队列，供运维审查和人工补偿。4xx 等不可恢复错误不会重复执行。可通过 `ASYNC_JOB_ATTEMPTS` 和 `ASYNC_JOB_BACKOFF_MS` 调整。
 
+同步与流式请求会监听调用方连接中断：仍在全局/渠道等待时立即退出，已调用上游时中止响应读取，并释放全局、渠道和模型并发槽。`X-Async` 在返回 202 后与原连接解耦，关闭任务轮询不会取消后台作业。
+
 ## 目录结构
 
 ```

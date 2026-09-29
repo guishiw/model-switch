@@ -23,6 +23,29 @@ type Attempt = { selection: Selection; req: ChatCompletionRequest };
 
 const CAPACITY_POLL_MS = 500;
 
+function waitForCapacity(signal: AbortSignal): Promise<void> {
+  if (signal.aborted) return Promise.reject(new Error('ABORTED'));
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    const timer = setTimeout(() => {
+      if (settled) return;
+      settled = true;
+      signal.removeEventListener('abort', onAbort);
+      resolve();
+    }, CAPACITY_POLL_MS);
+    const onAbort = () => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      signal.removeEventListener('abort', onAbort);
+      reject(new Error('ABORTED'));
+    };
+    signal.addEventListener('abort', onAbort, { once: true });
+    // Cover an abort that lands between the pre-check and listener registration.
+    if (signal.aborted) onAbort();
+  });
+}
+
 /**
  * Select an upstream; if every candidate is merely at its concurrency cap, wait
  * (up to QUEUE_MAX_WAIT_SECONDS) for a slot instead of failing.
@@ -30,7 +53,12 @@ const CAPACITY_POLL_MS = 500;
 async function selectWithWait(requestId: string, model: string, estimated: number, exclude: Set<string>, signal: AbortSignal, firstAttempt: boolean): Promise<Selection | null> {
   const deadline = Date.now() + env.QUEUE_MAX_WAIT_SECONDS * 1000;
   while (true) {
+    if (signal.aborted) throw new Error('ABORTED');
     const { selection, busy } = await selectUpstream(requestId, model, estimated, exclude);
+    if (signal.aborted) {
+      await selection?.release().catch((err) => logger.warn({ err, requestId }, 'failed to release channel slot after abort'));
+      throw new Error('ABORTED');
+    }
     if (selection) return selection;
     if (!busy) {
       if (firstAttempt) throw Errors.noChannel(model);
@@ -38,7 +66,7 @@ async function selectWithWait(requestId: string, model: string, estimated: numbe
     }
     if (signal.aborted) throw new Error('ABORTED');
     if (Date.now() >= deadline) throw Errors.rateLimited('All channels for this model are at their concurrency limit', 5);
-    await new Promise((r) => setTimeout(r, CAPACITY_POLL_MS));
+    await waitForCapacity(signal);
   }
 }
 
@@ -72,8 +100,9 @@ async function withFailover<T>(
       await recordSuccess(selection.target.channelId);
       return { result, selection, retries: attempt };
     } catch (err) {
-      await selection.release();
+      await selection.release().catch((releaseErr) => logger.warn({ err: releaseErr, requestId }, 'failed to release channel slot'));
       lastErr = err;
+      if (signal.aborted) throw new Error('ABORTED');
       if (err instanceof UpstreamError) {
         logger.warn({ channel: selection.target.channelName, status: err.status, msg: err.message, attempt }, 'upstream error');
         if (err.keyInvalid) await disableKey(selection.target.apiKeyId, `${err.status}: ${err.message.slice(0, 120)}`);
@@ -91,10 +120,10 @@ async function withFailover<T>(
 
 // ---------------------------------------------------------------------------
 
-export async function relayComplete(requestId: string, req: ChatCompletionRequest, signal: AbortSignal): Promise<{ response: ChatCompletionResponse; meta: RelayMeta }> {
+export async function relayComplete(requestId: string, req: ChatCompletionRequest, signal: AbortSignal, slotOwnerId = requestId): Promise<{ response: ChatCompletionResponse; meta: RelayMeta }> {
   const estimated = countMessages(req.messages) + (req.max_tokens ?? 1024);
   const started = Date.now();
-  const { result, selection, retries } = await withFailover(requestId, req, estimated, signal, async ({ selection, req }) => {
+  const { result, selection, retries } = await withFailover(slotOwnerId, req, estimated, signal, async ({ selection, req }) => {
     const provider = providerFor(selection.target.provider);
     return provider.complete(selection.target, req, signal);
   });
@@ -115,14 +144,14 @@ export async function relayComplete(requestId: string, req: ChatCompletionReques
  * Streaming relay. Failover only happens before the first chunk has been yielded.
  * The generator returns RelayMeta when the stream completes.
  */
-export async function* relayStream(requestId: string, req: ChatCompletionRequest, signal: AbortSignal): AsyncGenerator<ChatCompletionChunk, RelayMeta> {
+export async function* relayStream(requestId: string, req: ChatCompletionRequest, signal: AbortSignal, slotOwnerId = requestId): AsyncGenerator<ChatCompletionChunk, RelayMeta> {
   const estimated = countMessages(req.messages) + (req.max_tokens ?? 1024);
   const started = Date.now();
   const exclude = new Set<string>();
   let lastErr: unknown;
 
   for (let attempt = 0; attempt <= env.RELAY_MAX_RETRIES; attempt++) {
-    const selection = await selectWithWait(requestId, req.model, estimated, exclude, signal, attempt === 0);
+    const selection = await selectWithWait(slotOwnerId, req.model, estimated, exclude, signal, attempt === 0);
     if (!selection) break;
     const upstreamReq = applyTemplate(req, selection.defaultParams);
     const provider = providerFor(selection.target.provider);
@@ -154,6 +183,7 @@ export async function* relayStream(requestId: string, req: ChatCompletionRequest
       return { requestId, selection, retries: attempt, ttfbMs, usage, outputText, finishReason };
     } catch (err) {
       lastErr = err;
+      if (signal.aborted) throw new Error('ABORTED');
       if (err instanceof UpstreamError && !yielded) {
         logger.warn({ channel: selection.target.channelName, status: err.status, msg: err.message, attempt }, 'upstream stream error');
         if (err.keyInvalid) await disableKey(selection.target.apiKeyId, `${err.status}: ${err.message.slice(0, 120)}`);
@@ -165,7 +195,7 @@ export async function* relayStream(requestId: string, req: ChatCompletionRequest
       if (err instanceof UpstreamError) await recordFailure(selection.target.channelId);
       throw err;
     } finally {
-      await selection.release();
+      await selection.release().catch((releaseErr) => logger.warn({ err: releaseErr, requestId }, 'failed to release streaming channel slot'));
     }
   }
   if (lastErr instanceof UpstreamError) throw Errors.upstream(lastErr.status, lastErr.message);
