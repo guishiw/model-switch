@@ -3,7 +3,7 @@ import { useEffect, useState } from 'react';
 import { X, Copy, Check } from 'lucide-react';
 import { Badge, statusTone } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
-import { cn, fmt } from '@/lib/utils';
+import { cn, fmt, fmtSeconds } from '@/lib/utils';
 
 type Msg = { role: string; content: unknown; name?: string; tool_calls?: any[]; tool_call_id?: string };
 type Detail = {
@@ -121,9 +121,9 @@ export function LogDetail({ id, onClose }: { id: string; onClose: () => void }) 
               <Stat k="输入 Tokens" v={isLive(d.status) ? '…' : fmt(d.promptTokens)} />
               <Stat k="输出 Tokens" v={isLive(d.status) ? '…' : fmt(d.completionTokens)} />
               <Stat k="费用" v={`$${d.cost.toFixed(6)}`} />
-              <Stat k="总耗时" v={isLive(d.status) ? `${(elapsed / 1000).toFixed(0)}s…` : `${fmt(d.latencyMs)} ms`} />
-              <Stat k="排队等待" v={`${fmt(d.queueWaitMs)} ms`} />
-              <Stat k="首字节" v={d.ttfbMs != null ? `${fmt(d.ttfbMs)} ms` : '-'} />
+              <Stat k="总耗时" v={`${fmtSeconds(isLive(d.status) ? elapsed : d.latencyMs)}${isLive(d.status) ? '…' : ''}`} />
+              <Stat k="排队等待" v={fmtSeconds(d.queueWaitMs)} />
+              <Stat k="首字节" v={d.ttfbMs != null ? fmtSeconds(d.ttfbMs) : '-'} />
               <Stat k="重试" v={d.retries} />
               <Stat k="结束原因" v={reply?.finish ?? '-'} />
             </div>

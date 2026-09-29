@@ -3,7 +3,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { Badge, statusTone } from '@/components/ui/badge';
 import { Table, THead, TBody, TR, TH, TD } from '@/components/ui/table';
 import { Button } from '@/components/ui/button';
-import { fmt } from '@/lib/utils';
+import { fmt, fmtSeconds } from '@/lib/utils';
 import { LogDetail } from './log-detail';
 
 type Row = {
@@ -81,8 +81,8 @@ export function LogViewer() {
               <TD className="text-xs">{r.channel?.name ?? '-'}</TD>
               <TD className="text-xs">{r.token?.name ?? '-'}</TD>
               <TD className="text-xs">{live(r) ? '…' : `${fmt(r.promptTokens)} + ${fmt(r.completionTokens)}`}</TD>
-              <TD className="text-xs">{live(r) ? `${(elapsed(r) / 1000).toFixed(0)}s…` : `${r.latencyMs} ms${r.ttfbMs != null ? ` (ttfb ${r.ttfbMs})` : ''}`}</TD>
-              <TD className="text-xs">{r.queueWaitMs ? `${r.queueWaitMs} ms` : r.status === 'QUEUED' ? `${(elapsed(r) / 1000).toFixed(0)}s…` : '-'}</TD>
+              <TD className="text-xs">{live(r) ? `${fmtSeconds(elapsed(r))}…` : `${fmtSeconds(r.latencyMs)}${r.ttfbMs != null ? ` (ttfb ${fmtSeconds(r.ttfbMs)})` : ''}`}</TD>
+              <TD className="text-xs">{r.queueWaitMs ? fmtSeconds(r.queueWaitMs) : r.status === 'QUEUED' ? `${fmtSeconds(elapsed(r))}…` : '-'}</TD>
               <TD className="text-xs">{r.clientIp ?? '-'}</TD>
               <TD className="max-w-xs truncate text-xs text-red-600" title={r.errorMessage ?? ''}>{r.errorMessage ?? ''}</TD>
             </TR>

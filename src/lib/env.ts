@@ -23,7 +23,7 @@ const schema = z.object({
   ASYNC_JOB_BACKOFF_MS: z.coerce.number().int().positive().default(5000),
 
   /** Max wait for the first byte of the upstream response (headers + first chunk) */
-  UPSTREAM_TTFB_TIMEOUT_MS: z.coerce.number().int().positive().default(60_000),
+  UPSTREAM_TTFB_TIMEOUT_MS: z.coerce.number().int().positive().default(300_000),
   /** Max total duration of one upstream call, incl. the whole stream */
   UPSTREAM_TOTAL_TIMEOUT_MS: z.coerce.number().int().positive().default(600_000),
   RELAY_MAX_RETRIES: z.coerce.number().int().min(0).default(2),

@@ -95,4 +95,4 @@ src/app/admin/                后台页面；src/components/admin 组件；src/c
 
 ## 关键环境变量
 
-见 `.env.example`。设置 `REDIS_SENTINELS` 后，Web 与 Worker 使用 Sentinel 自动发现主节点；不设置时继续使用 `REDIS_URL`。`GLOBAL_MAX_CONCURRENCY` 控制并发上限，`QUEUE_MAX_WAIT_SECONDS` 为最长排队时间，`CIRCUIT_FAILURE_THRESHOLD/CIRCUIT_OPEN_SECONDS` 控制熔断；`UPSTREAM_TTFB_TIMEOUT_MS`（首字节，默认 60s）与 `UPSTREAM_TOTAL_TIMEOUT_MS`（单次调用总时长，默认 10 分钟）为上游双超时，超时返回 504 并参与故障转移。
+见 `.env.example`。设置 `REDIS_SENTINELS` 后，Web 与 Worker 使用 Sentinel 自动发现主节点；不设置时继续使用 `REDIS_URL`。`GLOBAL_MAX_CONCURRENCY` 控制并发上限，`QUEUE_MAX_WAIT_SECONDS` 为最长排队时间，`CIRCUIT_FAILURE_THRESHOLD/CIRCUIT_OPEN_SECONDS` 控制熔断；`UPSTREAM_TTFB_TIMEOUT_MS`（首字节，默认 5 分钟）与 `UPSTREAM_TOTAL_TIMEOUT_MS`（单次调用总时长，默认 10 分钟）为上游双超时，超时返回 504 并参与故障转移。
